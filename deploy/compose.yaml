@@ -1,0 +1,126 @@
+name: bazi-preprod
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-app-environment: &app-environment
+  BAZI_DATABASE_URL: mysql+pymysql://${MYSQL_USER:-bazi}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bazi}?charset=utf8mb4
+  BAZI_LLM_MODEL: ${BAZI_LLM_MODEL:-deepseek-chat}
+  BAZI_LLM_PROVIDER: ${BAZI_LLM_PROVIDER:-openai-compatible}
+  BAZI_ANALYSIS_PROMPT_VERSION: ${BAZI_ANALYSIS_PROMPT_VERSION:-bazi-analysis-1.0.0}
+  BAZI_LOG_LEVEL: ${BAZI_LOG_LEVEL:-INFO}
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-bazi}
+      MYSQL_USER: ${MYSQL_USER:-bazi}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      TZ: Asia/Shanghai
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --transaction-isolation=READ-COMMITTED
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./mysql/conf.d:/etc/mysql/conf.d:ro
+      - ./backups:/backups
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot --password=$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 40s
+    logging: *default-logging
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    restart: "no"
+    environment: *app-environment
+    depends_on:
+      mysql:
+        condition: service_healthy
+    logging: *default-logging
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    restart: unless-stopped
+    environment: *app-environment
+    expose:
+      - "8000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "api"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+    logging: *default-logging
+
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    command: ["python", "-m", "app.worker"]
+    restart: unless-stopped
+    environment:
+      <<: *app-environment
+      # This is intentionally the only service receiving the DeepSeek credential.
+      BAZI_LLM_API_KEY: ${BAZI_LLM_API_KEY}
+      BAZI_LLM_BASE_URL: ${BAZI_LLM_BASE_URL:-https://api.deepseek.com/v1}
+      BAZI_LLM_TIMEOUT_SECONDS: ${BAZI_LLM_TIMEOUT_SECONDS:-240}
+      BAZI_LLM_MAX_OUTPUT_TOKENS: ${BAZI_LLM_MAX_OUTPUT_TOKENS:-2600}
+      BAZI_LLM_TEMPERATURE: ${BAZI_LLM_TEMPERATURE:-0.35}
+      BAZI_WORKER_POLL_SECONDS: ${BAZI_WORKER_POLL_SECONDS:-2}
+      BAZI_WORKER_LEASE_SECONDS: ${BAZI_WORKER_LEASE_SECONDS:-600}
+      BAZI_ANALYSIS_MAX_ATTEMPTS: ${BAZI_ANALYSIS_MAX_ATTEMPTS:-2}
+      BAZI_WORKER_HEARTBEAT_FILE: /tmp/bazi-worker-heartbeat
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck", "worker", "--max-age", "90"]
+      interval: 20s
+      timeout: 8s
+      retries: 4
+      start_period: 30s
+    logging: *default-logging
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+    restart: unless-stopped
+    environment:
+      H5_DOMAIN: ${H5_DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ${TLS_CERT_DIR}:/etc/nginx/certs:ro
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --no-check-certificate -O /dev/null https://127.0.0.1/health/live || exit 1"]
+      interval: 20s
+      timeout: 5s
+      retries: 4
+      start_period: 15s
+    logging: *default-logging
+
+volumes:
+  mysql_data:

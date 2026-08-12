@@ -1,0 +1,8 @@
+[mysqld]
+default-time-zone = "+08:00"
+skip-name-resolve = ON
+local-infile = OFF
+max-connections = 100
+slow-query-log = ON
+long-query-time = 2
+

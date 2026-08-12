@@ -1,0 +1,99 @@
+log_format bazi_json escape=json
+  '{"timestamp":"$time_iso8601","level":"INFO","logger":"nginx.access",'
+  '"request_id":"$request_id","remote_addr":"$remote_addr","method":"$request_method",'
+  '"path":"$uri","status":$status,"duration_seconds":$request_time,'
+  '"upstream_seconds":"$upstream_response_time","bytes_sent":$bytes_sent}';
+
+upstream bazi_api {
+    server api:8000;
+    keepalive 32;
+}
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name ${H5_DOMAIN};
+    server_tokens off;
+    access_log /var/log/nginx/access.log bazi_json;
+    return 308 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name ${H5_DOMAIN};
+    server_tokens off;
+    access_log /var/log/nginx/access.log bazi_json;
+
+    ssl_certificate /etc/nginx/certs/fullchain.pem;
+    ssl_certificate_key /etc/nginx/certs/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_session_cache shared:TLS:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    client_max_body_size 1m;
+    client_body_timeout 20s;
+    client_header_timeout 15s;
+    keepalive_timeout 65s;
+    send_timeout 30s;
+
+    root /usr/share/nginx/html;
+    index index.html;
+    charset utf-8;
+
+    add_header Strict-Transport-Security "max-age=15552000" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    add_header Content-Security-Policy "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'; object-src 'none'" always;
+
+    location = /version.json {
+        try_files $uri =404;
+        expires -1;
+    }
+
+    location /assets/ {
+        try_files $uri =404;
+        expires 1y;
+    }
+
+    location = /api/v1 {
+        return 308 /api/v1/;
+    }
+
+    location ^~ /api/v1/ {
+        proxy_pass http://bazi_api;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 30s;
+        proxy_read_timeout 300s;
+        proxy_request_buffering on;
+        proxy_hide_header Server;
+    }
+
+    location ^~ /health {
+        proxy_pass http://bazi_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Request-ID $request_id;
+        proxy_connect_timeout 3s;
+        proxy_read_timeout 5s;
+        proxy_hide_header Server;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+        expires -1;
+    }
+}
+

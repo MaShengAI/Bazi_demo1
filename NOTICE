@@ -1,0 +1,8 @@
+The bundled file app/data/china_city_coordinates.csv contains 392 coordinate
+records supplied by the project owner. The source file did not include a
+license, attribution statement, or provenance metadata.
+
+Before public distribution or commercial use, the project owner must verify
+the data source and confirm that copying, modification, and redistribution are
+permitted. No GeoNames data or GeoNames identifiers are bundled by the current
+implementation.
