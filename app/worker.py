@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import exists, select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.config import AnalysisQueueSettings
@@ -25,10 +25,10 @@ from app.integrations.llm import (
 from app.models import AnalysisJobRecord, AnalysisSectionRecord, LLMCallLogRecord
 from app.observability import configure_logging
 from app.services.analysis_service import (
+    ANALYSIS_MAXIMUM_CHARS,
+    ANALYSIS_MINIMUM_CHARS,
     ANALYSIS_SECTIONS,
     SYSTEM_PROMPT,
-    ANALYSIS_MINIMUM_CHARS,
-    ANALYSIS_MAXIMUM_CHARS,
     _character_count,
     _normalize_content,
     build_section_prompt,
@@ -43,7 +43,7 @@ def utcnow() -> datetime:
 
 
 class AnalysisWorker:
-    """Lease-based worker; safe to run as a process separate from FastAPI."""
+    """Section-level leased queue worker; safe to run in multiple processes."""
 
     def __init__(
         self,
@@ -65,142 +65,197 @@ class AnalysisWorker:
         )
 
     async def run_once(self) -> bool:
+        """Claim and process one section. Primarily useful for tests and one-shot operation."""
         self._touch_heartbeat()
         self.recover_expired_leases()
-        job_id = self._claim_job()
-        if job_id is None:
+        claimed = self._claim_section()
+        if claimed is None:
             return False
-        await self._process_job(job_id)
+        job_id, section_id = claimed
+        await self._process_section(job_id, section_id)
         return True
 
     async def run_forever(self) -> None:
-        logger.info("worker_started", extra={"worker_id": self.worker_id})
+        logger.info(
+            "worker_started",
+            extra={
+                "worker_id": self.worker_id,
+                "concurrency": self.settings.worker_concurrency,
+            },
+        )
+        tasks = [
+            asyncio.create_task(self._run_slot(slot), name=f"section-slot-{slot}")
+            for slot in range(self.settings.worker_concurrency)
+        ]
         try:
-            while True:
-                self._touch_heartbeat()
-                worked = await self.run_once()
-                if not worked:
-                    await asyncio.sleep(self.settings.worker_poll_seconds)
+            await asyncio.gather(*tasks)
         finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
             logger.info("worker_stopped", extra={"worker_id": self.worker_id})
             await self.provider.close()
+
+    async def _run_slot(self, slot: int) -> None:
+        while True:
+            self._touch_heartbeat()
+            if slot == 0:
+                self.recover_expired_leases()
+            claimed = self._claim_section()
+            if claimed is None:
+                await asyncio.sleep(self.settings.worker_poll_seconds)
+                continue
+            job_id, section_id = claimed
+            await self._process_section(job_id, section_id)
 
     def _touch_heartbeat(self) -> None:
         self.heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
         self.heartbeat_file.touch()
 
-    def recover_expired_leases(self) -> int:
-        now = utcnow()
-        recovered = 0
-        with self.database.session() as session:
-            jobs = session.scalars(
-                select(AnalysisJobRecord)
-                .where(
-                    AnalysisJobRecord.status == "running",
-                    AnalysisJobRecord.lease_expires_at.is_not(None),
-                    AnalysisJobRecord.lease_expires_at < now,
-                )
-                .options(selectinload(AnalysisJobRecord.sections))
-                .with_for_update(skip_locked=True)
-            ).all()
-            for job in jobs:
-                recovered += 1
-                for section in job.sections:
-                    if section.status == "running":
-                        section.status = "pending"
-                        section.error_code = "worker_lease_expired"
-                        section.error = "worker租约过期，板块已重新入队"
-                        running_calls = session.scalars(
-                            select(LLMCallLogRecord).where(
-                                LLMCallLogRecord.section_id == section.id,
-                                LLMCallLogRecord.status == "running",
-                            )
-                        ).all()
-                        for call in running_calls:
-                            call.status = "failed"
-                            call.error_code = "worker_lease_expired"
-                            call.error = "worker租约过期"
-                            call.finished_at = now
-                job.status = (
-                    "partial"
-                    if any(section.status == "completed" for section in job.sections)
-                    else "pending"
-                )
-                job.locked_by = None
-                job.lease_expires_at = None
-            session.commit()
-            if recovered:
-                logger.warning(
-                    "expired_leases_recovered",
-                    extra={"worker_id": self.worker_id, "recovered_jobs": recovered},
-                )
-        return recovered
-
-    def _claim_job(self) -> str | None:
-        now = utcnow()
-        pending_section = exists().where(
+    def _eligible_job_ids(self, now: datetime) -> list[str]:
+        due_section = exists().where(
             AnalysisSectionRecord.job_id == AnalysisJobRecord.id,
             AnalysisSectionRecord.status == "pending",
+            AnalysisSectionRecord.next_attempt_at <= now,
         )
         with self.database.session() as session:
-            job = session.scalar(
-                select(AnalysisJobRecord)
-                .where(
-                    AnalysisJobRecord.status.in_(("pending", "partial")),
-                    AnalysisJobRecord.cancel_requested.is_(False),
-                    AnalysisJobRecord.model_id == self.settings.model_id,
-                    AnalysisJobRecord.provider == self.settings.provider,
-                    AnalysisJobRecord.prompt_version == self.settings.prompt_version,
-                    pending_section,
-                )
-                .order_by(AnalysisJobRecord.created_at, AnalysisJobRecord.id)
-                .limit(1)
-                .with_for_update(skip_locked=True)
+            return list(
+                session.scalars(
+                    select(AnalysisJobRecord.id)
+                    .where(
+                        AnalysisJobRecord.cancel_requested.is_(False),
+                        AnalysisJobRecord.model_id == self.settings.model_id,
+                        AnalysisJobRecord.provider == self.settings.provider,
+                        AnalysisJobRecord.prompt_version == self.settings.prompt_version,
+                        due_section,
+                    )
+                    .order_by(AnalysisJobRecord.created_at, AnalysisJobRecord.id)
+                    .limit(1000)
+                ).all()
             )
-            if job is None:
-                return None
-            job.status = "running"
-            job.locked_by = self.worker_id
-            job.lease_expires_at = now + timedelta(seconds=self.settings.worker_lease_seconds)
-            job.started_at = job.started_at or now
-            session.commit()
-            logger.info(
-                "job_claimed",
-                extra={"worker_id": self.worker_id, "job_id": job.id},
-            )
-            return job.id
 
-    async def _process_job(self, job_id: str) -> None:
-        logger.info("job_started", extra={"worker_id": self.worker_id, "job_id": job_id})
+    def _claim_statement(self, now: datetime, eligible_job_ids: list[str]):
+        return (
+            select(AnalysisSectionRecord)
+            .where(
+                AnalysisSectionRecord.status == "pending",
+                AnalysisSectionRecord.next_attempt_at <= now,
+                AnalysisSectionRecord.job_id.in_(eligible_job_ids),
+            )
+            # Across many reports, process the first section for each report before later ones.
+            .order_by(
+                AnalysisSectionRecord.position,
+                AnalysisSectionRecord.next_attempt_at,
+                AnalysisSectionRecord.created_at,
+                AnalysisSectionRecord.id,
+            )
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
+
+    def _claim_section(self) -> tuple[str, str] | None:
+        now = utcnow()
+        eligible_job_ids = self._eligible_job_ids(now)
+        if not eligible_job_ids:
+            return None
         with self.database.session() as session:
-            job = session.scalar(
-                select(AnalysisJobRecord)
-                .where(AnalysisJobRecord.id == job_id)
-                .options(selectinload(AnalysisJobRecord.sections))
+            section = session.scalar(self._claim_statement(now, eligible_job_ids))
+            if section is None:
+                return None
+            section.status = "running"
+            section.locked_by = self.worker_id
+            section.locked_at = now
+            section.lease_expires_at = now + timedelta(seconds=self.settings.worker_lease_seconds)
+            section.next_attempt_at = None
+            section.error_code = None
+            section.error = None
+            job_id = section.job_id
+            section_id = section.id
+            session.commit()
+        self._mark_job_running(job_id)
+        logger.info(
+            "section_claimed",
+            extra={
+                "worker_id": self.worker_id,
+                "job_id": job_id,
+                "section_id": section_id,
+            },
+        )
+        return job_id, section_id
+
+    def _mark_job_running(self, job_id: str) -> None:
+        with self.database.session() as session:
+            job = session.get(AnalysisJobRecord, job_id)
+            if job is None or job.cancel_requested:
+                return
+            job.status = "running"
+            job.started_at = job.started_at or utcnow()
+            job.finished_at = None
+            session.commit()
+
+    def recover_expired_leases(self) -> int:
+        now = utcnow()
+        recovered_ids: list[str] = []
+        affected_jobs: set[str] = set()
+        with self.database.session() as session:
+            sections = session.scalars(
+                select(AnalysisSectionRecord)
+                .where(
+                    AnalysisSectionRecord.status == "running",
+                    or_(
+                        AnalysisSectionRecord.lease_expires_at.is_(None),
+                        AnalysisSectionRecord.lease_expires_at < now,
+                    ),
+                )
+                .with_for_update(skip_locked=True)
+            ).all()
+            for section in sections:
+                recovered_ids.append(section.id)
+                affected_jobs.add(section.job_id)
+                section.status = "pending"
+                section.error_code = "worker_lease_expired"
+                section.error = "worker租约过期，板块已重新入队"
+                section.locked_by = None
+                section.locked_at = None
+                section.lease_expires_at = None
+                section.next_attempt_at = now
+                running_calls = session.scalars(
+                    select(LLMCallLogRecord).where(
+                        LLMCallLogRecord.section_id == section.id,
+                        LLMCallLogRecord.status == "running",
+                    )
+                ).all()
+                for call in running_calls:
+                    call.status = "failed"
+                    call.error_code = "worker_lease_expired"
+                    call.error = "worker租约过期"
+                    call.finished_at = now
+            session.commit()
+        for job_id in affected_jobs:
+            self._refresh_job_status(job_id)
+        if recovered_ids:
+            logger.warning(
+                "expired_leases_recovered",
+                extra={
+                    "worker_id": self.worker_id,
+                    "recovered_sections": len(recovered_ids),
+                },
             )
-            section_ids = (
-                [section.id for section in job.sections if section.status == "pending"]
-                if job is not None
-                else []
-            )
-        for section_id in section_ids:
-            if self._is_cancel_requested(job_id):
-                break
-            await self._process_section(job_id, section_id)
-        self._finish_job(job_id)
-        logger.info("job_finished", extra={"worker_id": self.worker_id, "job_id": job_id})
+        return len(recovered_ids)
 
     async def _process_section(self, job_id: str, section_id: str) -> None:
         length_hint = ""
-        last_error: tuple[str, str] | None = None
         for local_attempt in range(1, self.settings.max_attempts + 1):
             prepared = self._prepare_call(job_id, section_id, length_hint)
             if prepared is None:
+                self._refresh_job_status(job_id)
                 return
             log_id, prompt = prepared
             started = time.perf_counter()
             try:
-                completion = await self._call_provider_with_heartbeat(job_id, SYSTEM_PROMPT, prompt)
+                completion = await self._call_provider_with_heartbeat(
+                    section_id, SYSTEM_PROMPT, prompt
+                )
             except LLMProviderError as exc:
                 latency_ms = round((time.perf_counter() - started) * 1000)
                 request_id = exc.details.get("request_id")
@@ -212,43 +267,39 @@ class AnalysisWorker:
                     error_code=exc.code,
                     error=str(exc),
                 )
-                last_error = (exc.code, str(exc))
+                self._retry_or_fail_section(section_id, exc.code, str(exc))
+                self._refresh_job_status(job_id)
                 logger.warning(
                     "section_attempt_failed",
                     extra={
                         "worker_id": self.worker_id,
                         "job_id": job_id,
                         "section_id": section_id,
-                        "attempt": local_attempt,
                         "error_code": exc.code,
                     },
                 )
-                if local_attempt < self.settings.max_attempts:
-                    continue
-                self._fail_section(section_id, *last_error)
                 return
             except Exception:
                 latency_ms = round((time.perf_counter() - started) * 1000)
+                error_code = "llm_unexpected_error"
+                error = "模型调用发生未预期错误"
                 self._finish_call(
                     log_id,
                     status="failed",
                     latency_ms=latency_ms,
-                    error_code="llm_unexpected_error",
-                    error="模型调用发生未预期错误",
+                    error_code=error_code,
+                    error=error,
                 )
-                last_error = ("llm_unexpected_error", "模型调用发生未预期错误")
+                self._retry_or_fail_section(section_id, error_code, error)
+                self._refresh_job_status(job_id)
                 logger.exception(
                     "section_attempt_unexpected_error",
                     extra={
                         "worker_id": self.worker_id,
                         "job_id": job_id,
                         "section_id": section_id,
-                        "attempt": local_attempt,
                     },
                 )
-                if local_attempt < self.settings.max_attempts:
-                    continue
-                self._fail_section(section_id, *last_error)
                 return
 
             latency_ms = round((time.perf_counter() - started) * 1000)
@@ -273,6 +324,7 @@ class AnalysisWorker:
                 length_hint = f"上次输出为{char_count}字符，请明显{direction}并重新完整作答。"
                 continue
             self._complete_section(section_id, content, char_count, length_status)
+            self._refresh_job_status(job_id)
             logger.info(
                 "section_completed",
                 extra={
@@ -293,21 +345,24 @@ class AnalysisWorker:
         with self.database.session() as session:
             job = session.get(AnalysisJobRecord, job_id)
             section = session.get(AnalysisSectionRecord, section_id)
-            if (
-                job is None
-                or section is None
-                or job.cancel_requested
-                or section.status not in {"pending", "running"}
-            ):
+            if job is None or section is None:
+                return None
+            if job.cancel_requested:
+                if section.status == "running" and section.locked_by == self.worker_id:
+                    section.status = "cancelled"
+                    section.finished_at = now
+                    self._clear_section_lease(section)
+                    session.commit()
+                return None
+            if section.status != "running" or section.locked_by != self.worker_id:
                 return None
             spec = SECTION_BY_CODE[section.code]
-            section.status = "running"
             section.started_at = section.started_at or now
             section.attempt_count += 1
-            section.retry_count = max(0, section.attempt_count - 1)
+            section.retry_count = max(section.retry_count, section.attempt_count - 1)
             section.error_code = None
             section.error = None
-            job.lease_expires_at = now + timedelta(seconds=self.settings.worker_lease_seconds)
+            section.lease_expires_at = now + timedelta(seconds=self.settings.worker_lease_seconds)
             log = LLMCallLogRecord(
                 section_id=section.id,
                 request_hash=section.request_hash,
@@ -336,7 +391,7 @@ class AnalysisWorker:
         return LLMCompletion(content=await self.provider.complete(system_prompt, user_prompt))
 
     async def _call_provider_with_heartbeat(
-        self, job_id: str, system_prompt: str, user_prompt: str
+        self, section_id: str, system_prompt: str, user_prompt: str
     ) -> LLMCompletion:
         task = asyncio.create_task(self._call_provider(system_prompt, user_prompt))
         interval = max(5.0, min(30.0, self.settings.worker_lease_seconds / 3))
@@ -344,15 +399,21 @@ class AnalysisWorker:
             done, _ = await asyncio.wait({task}, timeout=interval)
             if task in done:
                 return await task
-            self._renew_lease(job_id)
+            self._renew_lease(section_id)
 
-    def _renew_lease(self, job_id: str) -> None:
+    def _renew_lease(self, section_id: str) -> None:
         self._touch_heartbeat()
         with self.database.session() as session:
-            job = session.get(AnalysisJobRecord, job_id)
-            if job is None or job.locked_by != self.worker_id:
+            section = session.get(AnalysisSectionRecord, section_id)
+            if (
+                section is None
+                or section.status != "running"
+                or section.locked_by != self.worker_id
+            ):
                 return
-            job.lease_expires_at = utcnow() + timedelta(seconds=self.settings.worker_lease_seconds)
+            section.lease_expires_at = utcnow() + timedelta(
+                seconds=self.settings.worker_lease_seconds
+            )
             session.commit()
 
     def _finish_call(
@@ -370,7 +431,7 @@ class AnalysisWorker:
     ) -> None:
         with self.database.session() as session:
             log = session.get(LLMCallLogRecord, log_id)
-            if log is None:
+            if log is None or log.status != "running":
                 return
             log.status = status
             log.latency_ms = latency_ms
@@ -388,34 +449,69 @@ class AnalysisWorker:
     ) -> None:
         with self.database.session() as session:
             section = session.get(AnalysisSectionRecord, section_id)
-            if section is None:
+            if (
+                section is None
+                or section.status != "running"
+                or section.locked_by != self.worker_id
+            ):
                 return
             section.status = "completed"
             section.content = content
             section.char_count = char_count
             section.length_status = length_status
+            section.failure_count = 0
             section.error_code = None
             section.error = None
             section.finished_at = utcnow()
+            section.next_attempt_at = None
+            self._clear_section_lease(section)
             session.commit()
 
-    def _fail_section(self, section_id: str, error_code: str, error: str) -> None:
+    def _retry_or_fail_section(self, section_id: str, error_code: str, error: str) -> None:
+        now = utcnow()
         with self.database.session() as session:
-            section = session.get(AnalysisSectionRecord, section_id)
-            if section is None:
+            section = session.scalar(
+                select(AnalysisSectionRecord)
+                .where(AnalysisSectionRecord.id == section_id)
+                .with_for_update()
+            )
+            if (
+                section is None
+                or section.status != "running"
+                or section.locked_by != self.worker_id
+            ):
                 return
-            section.status = "failed"
+            section.failure_count += 1
             section.error_code = error_code
             section.error = error
-            section.finished_at = utcnow()
+            self._clear_section_lease(section)
+            if section.failure_count <= len(self.settings.retry_delays_seconds):
+                delay = self.settings.retry_delays_seconds[section.failure_count - 1]
+                section.status = "pending"
+                section.next_attempt_at = now + timedelta(seconds=delay)
+                section.finished_at = None
+                logger.info(
+                    "section_retry_scheduled",
+                    extra={
+                        "worker_id": self.worker_id,
+                        "section_id": section.id,
+                        "retry_in_seconds": delay,
+                        "failure_count": section.failure_count,
+                    },
+                )
+            else:
+                section.status = "failed"
+                section.next_attempt_at = None
+                section.finished_at = now
             session.commit()
 
-    def _is_cancel_requested(self, job_id: str) -> bool:
-        with self.database.session() as session:
-            job = session.get(AnalysisJobRecord, job_id)
-            return job is None or job.cancel_requested
+    @staticmethod
+    def _clear_section_lease(section: AnalysisSectionRecord) -> None:
+        section.locked_by = None
+        section.locked_at = None
+        section.lease_expires_at = None
 
-    def _finish_job(self, job_id: str) -> None:
+    def _refresh_job_status(self, job_id: str) -> None:
         now = utcnow()
         with self.database.session() as session:
             job = session.scalar(
@@ -426,22 +522,42 @@ class AnalysisWorker:
             )
             if job is None:
                 return
-            states = [section.status for section in job.sections]
             if job.cancel_requested:
                 for section in job.sections:
                     if section.status == "pending":
                         section.status = "cancelled"
-                job.status = "cancelled"
+                        section.finished_at = now
+                        section.next_attempt_at = None
+                        self._clear_section_lease(section)
+
+            states = [section.status for section in job.sections]
+            has_active = any(state in {"pending", "running"} for state in states)
+            if job.cancel_requested:
+                job.status = "running" if "running" in states else "cancelled"
             elif states and all(state == "completed" for state in states):
                 job.status = "completed"
-            elif any(state == "completed" for state in states):
+            elif "running" in states:
+                job.status = "running"
+            elif "pending" in states:
+                job.status = (
+                    "partial"
+                    if any(state in {"completed", "failed"} for state in states)
+                    else "pending"
+                )
+            elif "completed" in states:
                 job.status = "partial"
-            elif not any(state in {"pending", "running"} for state in states):
+            elif "failed" in states:
                 job.status = "failed"
             else:
-                job.status = "pending"
-            if job.status in {"completed", "partial", "failed", "cancelled"}:
+                job.status = "cancelled"
+
+            if job.status in {"completed", "failed", "cancelled"} or (
+                job.status == "partial" and not has_active
+            ):
                 job.finished_at = now
+            else:
+                job.finished_at = None
+            # Job-level lease columns remain for schema compatibility but are no longer used.
             job.locked_by = None
             job.lease_expires_at = None
             session.commit()

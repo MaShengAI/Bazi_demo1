@@ -1,6 +1,6 @@
 # 微信 H5 预发布部署手册
 
-本手册只针对预发布服务器，不会授权脚本连接或修改真实生产环境。目标拓扑为：公网 `443/80 -> Nginx -> React 或 FastAPI`，FastAPI 与 worker 通过内部 Docker 网络访问 MySQL。MySQL 不映射宿主机端口。AI 队列使用 MySQL 的租约与 `SKIP LOCKED`，项目当前不需要 Redis。
+本手册只针对预发布服务器，不会授权脚本连接或修改真实生产环境。目标拓扑为：公网 `443/80 -> Nginx -> React 或 FastAPI`，FastAPI 与2个 worker 通过内部 Docker 网络访问 MySQL；每个 worker 默认并发4个 section。MySQL 不映射宿主机端口。AI 队列使用 MySQL 的 section 租约与 `SKIP LOCKED`，项目当前不需要 Redis。
 
 ## 1. 域名、服务器与防火墙
 

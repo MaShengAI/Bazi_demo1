@@ -76,6 +76,8 @@ services:
       dockerfile: deploy/Dockerfile.api
     command: ["python", "-m", "app.worker"]
     restart: unless-stopped
+    deploy:
+      replicas: 2
     environment:
       <<: *app-environment
       # This is intentionally the only service receiving the DeepSeek credential.
@@ -86,7 +88,9 @@ services:
       BAZI_LLM_TEMPERATURE: ${BAZI_LLM_TEMPERATURE:-0.35}
       BAZI_WORKER_POLL_SECONDS: ${BAZI_WORKER_POLL_SECONDS:-2}
       BAZI_WORKER_LEASE_SECONDS: ${BAZI_WORKER_LEASE_SECONDS:-600}
+      BAZI_WORKER_CONCURRENCY: ${BAZI_WORKER_CONCURRENCY:-4}
       BAZI_ANALYSIS_MAX_ATTEMPTS: ${BAZI_ANALYSIS_MAX_ATTEMPTS:-2}
+      BAZI_ANALYSIS_RETRY_DELAYS_SECONDS: ${BAZI_ANALYSIS_RETRY_DELAYS_SECONDS:-30,60,120}
       BAZI_WORKER_HEARTBEAT_FILE: /tmp/bazi-worker-heartbeat
     depends_on:
       migrate:
