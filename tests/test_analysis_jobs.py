@@ -1,5 +1,5 @@
 import asyncio
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -96,6 +96,25 @@ def test_submit_is_202_persisted_and_deduplicated(persisted_app) -> None:
     assert status.json()["total_sections"] == 8
     assert len(result.json()["sections"]) == 8
     assert all(section["status"] == "pending" for section in result.json()["sections"])
+
+
+def test_submit_schedules_sections_with_application_utc(persisted_app) -> None:
+    client, database = persisted_app
+    before = datetime.now(UTC)
+
+    accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
+
+    with database.session() as session:
+        sections = session.scalars(
+            select(AnalysisSectionRecord).where(AnalysisSectionRecord.job_id == accepted["job_id"])
+        ).all()
+        assert len(sections) == 8
+        for section in sections:
+            assert section.next_attempt_at is not None
+            scheduled_at = section.next_attempt_at
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=UTC)
+            assert before <= scheduled_at <= datetime.now(UTC)
 
 
 def test_worker_completes_and_logs_only_safe_metadata(persisted_app) -> None:
