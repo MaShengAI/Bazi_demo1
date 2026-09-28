@@ -27,6 +27,8 @@ from app.observability import configure_logging
 from app.services.analysis_service import (
     ANALYSIS_SECTIONS,
     SYSTEM_PROMPT,
+    ANALYSIS_MINIMUM_CHARS,
+    ANALYSIS_MAXIMUM_CHARS,
     _character_count,
     _normalize_content,
     build_section_prompt,
@@ -253,9 +255,9 @@ class AnalysisWorker:
             content = _normalize_content(completion.content)
             char_count = _character_count(content)
             length_status = "ok"
-            if char_count < 1500:
+            if char_count < ANALYSIS_MINIMUM_CHARS:
                 length_status = "short"
-            elif char_count > 2600:
+            elif char_count > ANALYSIS_MAXIMUM_CHARS:
                 length_status = "long"
             self._finish_call(
                 log_id,
