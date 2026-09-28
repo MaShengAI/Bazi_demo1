@@ -106,9 +106,7 @@ def test_submit_schedules_sections_with_application_utc(persisted_app) -> None:
 
     with database.session() as session:
         sections = session.scalars(
-            select(AnalysisSectionRecord).where(
-                AnalysisSectionRecord.job_id == accepted["job_id"]
-            )
+            select(AnalysisSectionRecord).where(AnalysisSectionRecord.job_id == accepted["job_id"])
         ).all()
         assert len(sections) == 8
         for section in sections:

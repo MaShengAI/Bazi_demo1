@@ -33,9 +33,7 @@ def upgrade() -> None:
     # several hours in the future to UTC workers. Make them immediately claimable once.
     op.execute(
         sa.text(
-            "UPDATE analysis_sections "
-            f"SET next_attempt_at = {due_now} "
-            "WHERE status = 'pending'"
+            f"UPDATE analysis_sections SET next_attempt_at = {due_now} WHERE status = 'pending'"
         )
     )
 
