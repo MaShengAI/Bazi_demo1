@@ -79,7 +79,7 @@ SYSTEM_PROMPT = """你是传统八字文化分析写作助手。你只能依据�
 3. 健康部分不得给出诊断或替代就医；财运部分不得给出具体投资标的或保证收益。
 4. 不得仅凭单个神煞下结论，不得编造输入中没有的旺衰评分、格局、喜用神或现实经历。
 5. 给出具体、可执行且现实的建议，并同时说明有利表现和潜在盲点。
-6. 每次只写指定板块，目标约1500个中文字符，使用自然段；不要输出标题、编号、Markdown表格或免责声明。
+6. 每次只写指定板块，目标约2000个中文字符，且正文不得少于1500个中文字符，使用自然段；不要输出标题、编号、Markdown表格或免责声明。
 """
 
 
@@ -184,9 +184,9 @@ class AnalysisService:
         provider: LLMProvider,
         *,
         max_concurrency: int = 2,
-        target_chars: int = 1500,
-        minimum_chars: int = 1100,
-        maximum_chars: int = 1900,
+        target_chars: int = 2000,
+        minimum_chars: int = 1500,
+        maximum_chars: int = 2600,
         max_attempts: int = 2,
     ):
         self.chart_service = chart_service
@@ -286,9 +286,9 @@ def build_section_prompt(
     spec: AnalysisSectionSpec,
     chart: dict[str, object],
     *,
-    target_chars: int = 1500,
-    minimum_chars: int = 1100,
-    maximum_chars: int = 1900,
+    target_chars: int = 2000,
+    minimum_chars: int = 1500,
+    maximum_chars: int = 2600,
     length_hint: str = "",
     analysis_date: date | None = None,
 ) -> str:
@@ -301,7 +301,8 @@ def build_section_prompt(
     return (
         f"本次板块：{spec.title}\n"
         f"写作重点：{spec.focus}\n"
-        f"长度要求：约{target_chars}个中文字符，建议控制在"
-        f"{minimum_chars}—{maximum_chars}字符。{length_hint}\n"
+        f"长度要求：目标约{target_chars}个中文字符，全文必须控制在"
+        f"{minimum_chars}—{maximum_chars}字符。"
+        f"必须完成最终正文后再结束回答。{length_hint}\n"
         f"结构化排盘数据：\n{context_json}"
     )

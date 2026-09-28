@@ -46,7 +46,7 @@ class LLMSettings:
             base_url=os.getenv("BAZI_LLM_BASE_URL", "https://api.deepseek.com").strip(),
             model=os.getenv("BAZI_LLM_MODEL", "deepseek-chat").strip(),
             timeout_seconds=_float_env("BAZI_LLM_TIMEOUT_SECONDS", 240.0, 10.0, 600.0),
-            max_output_tokens=_int_env("BAZI_LLM_MAX_OUTPUT_TOKENS", 2600, 1200, 8000),
+            max_output_tokens=_int_env("BAZI_LLM_MAX_OUTPUT_TOKENS", 2600, 1200, 65536),
             temperature=_float_env("BAZI_LLM_TEMPERATURE", 0.35, 0.0, 1.5),
             max_concurrency=_int_env("BAZI_LLM_MAX_CONCURRENCY", 2, 1, 8),
         )
@@ -117,7 +117,8 @@ class OpenAICompatibleLLM:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt},
             ],
-            "temperature": self.settings.temperature,
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
             "max_tokens": self.settings.max_output_tokens,
             "stream": False,
         }

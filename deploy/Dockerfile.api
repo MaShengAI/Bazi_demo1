@@ -8,7 +8,12 @@ COPY pyproject.toml README.md ./
 COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./
-RUN python -m pip install --no-cache-dir .
+RUN python -m pip install \
+    --index-url https://pypi.tuna.tsinghua.edu.cn/simple \
+    --timeout 120 \
+    --retries 10 \
+    --no-cache-dir \
+    .
 
 RUN useradd --system --uid 10001 --create-home bazi \
     && chown -R bazi:bazi /srv/bazi

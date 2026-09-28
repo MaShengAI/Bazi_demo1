@@ -253,9 +253,9 @@ class AnalysisWorker:
             content = _normalize_content(completion.content)
             char_count = _character_count(content)
             length_status = "ok"
-            if char_count < 1100:
+            if char_count < 1500:
                 length_status = "short"
-            elif char_count > 1900:
+            elif char_count > 2600:
                 length_status = "long"
             self._finish_call(
                 log_id,
