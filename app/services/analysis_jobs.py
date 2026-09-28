@@ -94,6 +94,7 @@ class AnalysisJobService:
                 rule_version=rule_version,
                 request_hash=request_hash,
             )
+            queued_at = datetime.now(UTC)
             for position, spec in enumerate(ANALYSIS_SECTIONS):
                 job.sections.append(
                     AnalysisSectionRecord(
@@ -101,6 +102,7 @@ class AnalysisJobService:
                         title=spec.title,
                         position=position,
                         status="pending",
+                        next_attempt_at=queued_at,
                         request_hash=canonical_hash(
                             {
                                 "job_request_hash": request_hash,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from datetime import UTC
 
 import pytest
 from sqlalchemy import delete, inspect
@@ -86,6 +87,12 @@ def test_mysql_schema_and_skip_locked_claim_different_sections(mysql_database: D
             )
         session.add(job)
         session.commit()
+        for section in job.sections:
+            assert section.next_attempt_at is not None
+            scheduled_at = section.next_attempt_at
+            if scheduled_at.tzinfo is None:
+                scheduled_at = scheduled_at.replace(tzinfo=UTC)
+            assert abs((scheduled_at - utcnow()).total_seconds()) < 5
 
     settings = AnalysisQueueSettings(
         model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=1
