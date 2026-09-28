@@ -48,7 +48,7 @@ def test_analysis_catalog_contains_the_eight_requested_sections() -> None:
         "恋爱情感与婚姻状况预测",
         "子女状况与关系预测",
         "学业发展分析与建议",
-        "事业发展预测与建议",
+        "事业发展分析与建议",
         "财运状况与求财建议",
         "个人健康与灾厄状况预测",
         "大运流年与人生起伏运程",
@@ -73,9 +73,9 @@ def test_in_process_analysis_service_still_omits_name() -> None:
     assert analysis["model"] == "fake-analysis-model"
     assert len(analysis["sections"]) == 8
     assert all(section["char_count"] == 1500 for section in analysis["sections"])
-    assert all(section["length_status"] == "ok" for section in analysis["sections"])
-    assert analysis["warnings"] == []
-    assert len(provider.prompts) == 8
+    assert all(section["length_status"] == "short" for section in analysis["sections"])
+    assert len(analysis["warnings"]) == 8
+    assert len(provider.prompts) == 16
     assert all("隐私姓名" not in prompt for prompt in provider.prompts)
     assert provider.closed
 

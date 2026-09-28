@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from sqlalchemy import select
@@ -156,8 +157,13 @@ class AnalysisJobService:
                     {"status": section.status},
                 )
             section.status = "pending"
+            section.failure_count = 0
             section.error_code = None
             section.error = None
+            section.locked_by = None
+            section.locked_at = None
+            section.lease_expires_at = None
+            section.next_attempt_at = datetime.now(UTC)
             section.started_at = None
             section.finished_at = None
             job.cancel_requested = False
@@ -190,6 +196,10 @@ class AnalysisJobService:
             for section in job.sections:
                 if section.status == "pending":
                     section.status = "cancelled"
+                    section.locked_by = None
+                    section.locked_at = None
+                    section.lease_expires_at = None
+                    section.next_attempt_at = None
             if not any(section.status == "running" for section in job.sections):
                 job.status = "cancelled"
             session.commit()

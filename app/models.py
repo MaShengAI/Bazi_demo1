@@ -95,6 +95,14 @@ class AnalysisSectionRecord(Base):
         ),
         UniqueConstraint("job_id", "code", name="uq_analysis_sections_job_code"),
         UniqueConstraint("request_hash", name="uq_analysis_sections_request_hash"),
+        Index(
+            "ix_analysis_sections_queue",
+            "status",
+            "position",
+            "next_attempt_at",
+            "created_at",
+        ),
+        Index("ix_analysis_sections_lease", "status", "lease_expires_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
@@ -110,9 +118,16 @@ class AnalysisSectionRecord(Base):
     length_status: Mapped[str | None] = mapped_column(String(16))
     attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_code: Mapped[str | None] = mapped_column(String(64))
     error: Mapped[str | None] = mapped_column(Text)
     request_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    locked_by: Mapped[str | None] = mapped_column(String(128))
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    next_attempt_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )

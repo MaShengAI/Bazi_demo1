@@ -7,6 +7,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect, select
+from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import selectinload
 
 from app.config import AnalysisQueueSettings
@@ -58,6 +59,13 @@ class FakeDetailedProvider:
         self.closed = True
 
 
+async def drain_worker(worker: AnalysisWorker, limit: int = 20) -> int:
+    processed = 0
+    while processed < limit and await worker.run_once():
+        processed += 1
+    return processed
+
+
 @pytest.fixture
 def persisted_app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'analysis.sqlite3').as_posix()}"
@@ -103,7 +111,7 @@ def test_worker_completes_and_logs_only_safe_metadata(persisted_app) -> None:
         worker_id="test-worker",
     )
 
-    assert asyncio.run(worker.run_once()) is True
+    assert asyncio.run(drain_worker(worker)) == 8
     result = client.get(f"/api/v1/analyses/{accepted['job_id']}").json()
     assert result["status"] == "completed"
     assert result["completed_sections"] == 8
@@ -129,10 +137,13 @@ def test_partial_result_survives_and_failed_section_can_retry(persisted_app) -> 
         database,
         FakeDetailedProvider({"wealth"}),
         AnalysisQueueSettings(
-            model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=1
+            model_id="fake-model",
+            prompt_version="test-prompt-v1",
+            max_attempts=1,
+            retry_delays_seconds=(),
         ),
     )
-    asyncio.run(first_worker.run_once())
+    assert asyncio.run(drain_worker(first_worker)) == 8
 
     partial = client.get(f"/api/v1/analyses/{accepted['job_id']}").json()
     assert partial["status"] == "partial"
@@ -168,10 +179,11 @@ def test_worker_recovers_expired_running_task(persisted_app) -> None:
             .options(selectinload(AnalysisJobRecord.sections))
         )
         assert job is not None
-        job.status = "running"
-        job.locked_by = "dead-worker"
-        job.lease_expires_at = utcnow() - timedelta(seconds=1)
-        job.sections[0].status = "running"
+        section = job.sections[0]
+        section.status = "running"
+        section.locked_by = "dead-worker"
+        section.locked_at = utcnow() - timedelta(minutes=10)
+        section.lease_expires_at = utcnow() - timedelta(seconds=1)
         session.commit()
 
     worker = AnalysisWorker(
@@ -182,8 +194,102 @@ def test_worker_recovers_expired_running_task(persisted_app) -> None:
         ),
     )
     assert worker.recover_expired_leases() == 1
-    assert asyncio.run(worker.run_once()) is True
+    assert asyncio.run(drain_worker(worker)) == 8
     assert client.get(f"/api/v1/analyses/{accepted['job_id']}").json()["status"] == "completed"
+
+
+def test_workers_claim_independent_sections_with_mysql_skip_locked(persisted_app) -> None:
+    client, database = persisted_app
+    client.post("/api/v1/analyses", json=chart_payload())
+    settings = AnalysisQueueSettings(
+        model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=1
+    )
+    first = AnalysisWorker(database, FakeDetailedProvider(), settings, worker_id="worker-one")
+    second = AnalysisWorker(database, FakeDetailedProvider(), settings, worker_id="worker-two")
+
+    first_claim = first._claim_section()
+    second_claim = second._claim_section()
+
+    assert first_claim is not None
+    assert second_claim is not None
+    assert first_claim[1] != second_claim[1]
+    with database.session() as session:
+        running = session.scalars(
+            select(AnalysisSectionRecord).where(AnalysisSectionRecord.status == "running")
+        ).all()
+        assert {section.locked_by for section in running} == {"worker-one", "worker-two"}
+        assert all(section.locked_at and section.lease_expires_at for section in running)
+
+    mysql_sql = str(
+        first._claim_statement(utcnow(), first._eligible_job_ids(utcnow())).compile(
+            dialect=mysql.dialect()
+        )
+    )
+    assert "FOR UPDATE SKIP LOCKED" in mysql_sql
+
+
+def test_provider_failures_use_30_60_120_second_queue_backoff(persisted_app) -> None:
+    client, database = persisted_app
+    accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
+    with database.session() as session:
+        job = session.scalar(
+            select(AnalysisJobRecord)
+            .where(AnalysisJobRecord.id == accepted["job_id"])
+            .options(selectinload(AnalysisJobRecord.sections))
+        )
+        assert job is not None
+        for section in job.sections:
+            if section.code != "personality":
+                section.status = "cancelled"
+        session.commit()
+
+    worker = AnalysisWorker(
+        database,
+        FakeDetailedProvider({"personality"}),
+        AnalysisQueueSettings(
+            model_id="fake-model",
+            prompt_version="test-prompt-v1",
+            max_attempts=1,
+            retry_delays_seconds=(30, 60, 120),
+        ),
+    )
+
+    for failure_count, delay in enumerate((30, 60, 120), 1):
+        before = utcnow()
+        assert asyncio.run(worker.run_once()) is True
+        with database.session() as session:
+            section = session.scalar(
+                select(AnalysisSectionRecord).where(
+                    AnalysisSectionRecord.job_id == accepted["job_id"],
+                    AnalysisSectionRecord.code == "personality",
+                )
+            )
+            assert section is not None
+            assert section.status == "pending"
+            assert section.failure_count == failure_count
+            assert section.next_attempt_at is not None
+            scheduled_delay = (
+                section.next_attempt_at - before.replace(tzinfo=None)
+            ).total_seconds()
+            assert delay - 1 <= scheduled_delay <= delay + 1
+            section.next_attempt_at = utcnow() - timedelta(seconds=1)
+            session.commit()
+
+    assert asyncio.run(worker.run_once()) is True
+    with database.session() as session:
+        section = session.scalar(
+            select(AnalysisSectionRecord).where(
+                AnalysisSectionRecord.job_id == accepted["job_id"],
+                AnalysisSectionRecord.code == "personality",
+            )
+        )
+        assert section is not None
+        assert section.status == "failed"
+        assert section.failure_count == 4
+        assert section.next_attempt_at is None
+        assert section.locked_by is None
+        assert section.lease_expires_at is None
+        assert section.retry_count == 3
 
 
 def test_cancel_and_delete_birth_data_with_cascade(persisted_app) -> None:
@@ -211,6 +317,16 @@ def test_alembic_migration_creates_the_four_core_tables(
     database = Database(database_url)
     try:
         tables = set(inspect(database.engine).get_table_names())
+        section_columns = {
+            column["name"] for column in inspect(database.engine).get_columns("analysis_sections")
+        }
     finally:
         database.dispose()
     assert {"charts", "analysis_jobs", "analysis_sections", "llm_call_logs"} <= tables
+    assert {
+        "failure_count",
+        "locked_at",
+        "locked_by",
+        "lease_expires_at",
+        "next_attempt_at",
+    } <= section_columns

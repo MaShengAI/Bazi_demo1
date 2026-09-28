@@ -130,7 +130,9 @@ python -m app.worker
 - `BAZI_ANALYSIS_PROMPT_VERSION`：提示词版本，默认 `bazi-analysis-1.0.0`；
 - `BAZI_ANALYSIS_MAX_ATTEMPTS`：每次处理一个板块的最大尝试数，默认2；
 - `BAZI_WORKER_POLL_SECONDS`：空队列轮询间隔，默认2秒；
-- `BAZI_WORKER_LEASE_SECONDS`：worker任务租约，默认600秒。
+- `BAZI_WORKER_LEASE_SECONDS`：section任务租约，默认600秒；
+- `BAZI_WORKER_CONCURRENCY`：每个 worker 同时处理的 section 数，默认4；
+- `BAZI_ANALYSIS_RETRY_DELAYS_SECONDS`：模型调用失败后的数据库退避秒数，默认 `30,60,120`。
 
 调用示例：
 
