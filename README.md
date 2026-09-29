@@ -132,6 +132,7 @@ python -m app.worker
 - `BAZI_WORKER_POLL_SECONDS`：空队列轮询间隔，默认2秒；
 - `BAZI_WORKER_LEASE_SECONDS`：section任务租约，默认600秒；
 - `BAZI_WORKER_CONCURRENCY`：每个 worker 同时处理的 section 数，默认4；
+- `BAZI_MAX_RUNNING_SECTIONS_PER_JOB`：单份报告同时运行的 section 上限，默认4；
 - `BAZI_ANALYSIS_RETRY_DELAYS_SECONDS`：模型调用失败后的数据库退避秒数，默认 `30,60,120`。
 
 调用示例：

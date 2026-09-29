@@ -57,7 +57,7 @@ API 进程不要求模型密钥：
 python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 ```
 
-worker 进程配置模型密钥后独立启动。直接运行时启动一个进程、默认4路并发；Compose 通过 `deploy.replicas: 2` 启动两个相同 worker：
+worker 进程配置模型密钥后独立启动。直接运行时启动一个进程、默认4路并发；Compose 通过 `deploy.replicas: 3` 启动三个相同 worker：
 
 ```powershell
 $env:BAZI_LLM_API_KEY="sk-替换为真实ASCII密钥"
@@ -69,6 +69,7 @@ python -m app.worker
 队列相关配置：
 
 - `BAZI_WORKER_CONCURRENCY`：每个 worker 的并发 section 数，默认4；
+- `BAZI_MAX_RUNNING_SECTIONS_PER_JOB`：单份报告同时运行的 section 上限，默认4；调度时优先选择当前运行 section 更少的报告；
 - `BAZI_WORKER_LEASE_SECONDS`：section 租约时长，默认600秒，调用中会自动续租；
 - `BAZI_WORKER_POLL_SECONDS`：空队列轮询间隔，默认2秒；
 - `BAZI_ANALYSIS_RETRY_DELAYS_SECONDS`：调用失败后的调度退避，默认 `30,60,120`；

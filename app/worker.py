@@ -10,7 +10,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import selectinload
 
 from app.config import AnalysisQueueSettings
@@ -112,37 +112,46 @@ class AnalysisWorker:
         self.heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
         self.heartbeat_file.touch()
 
-    def _eligible_job_ids(self, now: datetime) -> list[str]:
+    def _claim_job_statement(self, now: datetime):
         due_section = exists().where(
             AnalysisSectionRecord.job_id == AnalysisJobRecord.id,
             AnalysisSectionRecord.status == "pending",
             AnalysisSectionRecord.next_attempt_at <= now,
         )
-        with self.database.session() as session:
-            return list(
-                session.scalars(
-                    select(AnalysisJobRecord.id)
-                    .where(
-                        AnalysisJobRecord.cancel_requested.is_(False),
-                        AnalysisJobRecord.model_id == self.settings.model_id,
-                        AnalysisJobRecord.provider == self.settings.provider,
-                        AnalysisJobRecord.prompt_version == self.settings.prompt_version,
-                        due_section,
-                    )
-                    .order_by(AnalysisJobRecord.created_at, AnalysisJobRecord.id)
-                    .limit(1000)
-                ).all()
+        running_count = (
+            select(func.count(AnalysisSectionRecord.id))
+            .where(
+                AnalysisSectionRecord.job_id == AnalysisJobRecord.id,
+                AnalysisSectionRecord.status == "running",
             )
+            .correlate(AnalysisJobRecord)
+            .scalar_subquery()
+        )
+        return (
+            select(AnalysisJobRecord)
+            .where(
+                AnalysisJobRecord.cancel_requested.is_(False),
+                AnalysisJobRecord.model_id == self.settings.model_id,
+                AnalysisJobRecord.provider == self.settings.provider,
+                AnalysisJobRecord.prompt_version == self.settings.prompt_version,
+                due_section,
+                running_count < self.settings.max_running_sections_per_job,
+            )
+            # Give capacity to reports with fewer running sections first. The job-row
+            # lock makes the per-report limit atomic across all worker processes.
+            .order_by(running_count, AnalysisJobRecord.created_at, AnalysisJobRecord.id)
+            .limit(1)
+            .with_for_update(skip_locked=True)
+        )
 
-    def _claim_statement(self, now: datetime, eligible_job_ids: list[str]):
+    def _claim_statement(self, now: datetime, job_id: str):
         return (
             select(AnalysisSectionRecord)
             .where(
                 AnalysisSectionRecord.status == "pending",
                 AnalysisSectionRecord.next_attempt_at <= now,
-                AnalysisSectionRecord.job_id.in_(eligible_job_ids),
+                AnalysisSectionRecord.job_id == job_id,
             )
-            # Across many reports, process the first section for each report before later ones.
             .order_by(
                 AnalysisSectionRecord.position,
                 AnalysisSectionRecord.next_attempt_at,
@@ -155,12 +164,12 @@ class AnalysisWorker:
 
     def _claim_section(self) -> tuple[str, str] | None:
         now = utcnow()
-        eligible_job_ids = self._eligible_job_ids(now)
-        if not eligible_job_ids:
-            return None
         with self.database.session() as session:
-            section = session.scalar(self._claim_statement(now, eligible_job_ids))
-            if section is None:
+            job = session.scalar(self._claim_job_statement(now))
+            if job is None:
+                return None
+            section = session.scalar(self._claim_statement(now, job.id))
+            if section is None or job.cancel_requested:
                 return None
             section.status = "running"
             section.locked_by = self.worker_id
@@ -171,8 +180,10 @@ class AnalysisWorker:
             section.error = None
             job_id = section.job_id
             section_id = section.id
+            job.status = "running"
+            job.started_at = job.started_at or now
+            job.finished_at = None
             session.commit()
-        self._mark_job_running(job_id)
         logger.info(
             "section_claimed",
             extra={
@@ -182,16 +193,6 @@ class AnalysisWorker:
             },
         )
         return job_id, section_id
-
-    def _mark_job_running(self, job_id: str) -> None:
-        with self.database.session() as session:
-            job = session.get(AnalysisJobRecord, job_id)
-            if job is None or job.cancel_requested:
-                return
-            job.status = "running"
-            job.started_at = job.started_at or utcnow()
-            job.finished_at = None
-            session.commit()
 
     def recover_expired_leases(self) -> int:
         now = utcnow()

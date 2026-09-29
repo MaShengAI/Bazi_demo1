@@ -14,7 +14,7 @@ jobs:
       mysql:
         image: mysql:8.4
         env:
-          MYSQL_DATABASE: bazi_ci
+          MYSQL_DATABASE: bazi_ci_test
           MYSQL_USER: bazi_ci
           MYSQL_PASSWORD: bazi_ci_password
           MYSQL_ROOT_PASSWORD: root_ci_password
@@ -26,7 +26,8 @@ jobs:
           --health-timeout=5s
           --health-retries=12
     env:
-      BAZI_DATABASE_URL: mysql+pymysql://bazi_ci:bazi_ci_password@127.0.0.1:3306/bazi_ci?charset=utf8mb4
+      BAZI_DATABASE_URL: mysql+pymysql://bazi_ci:bazi_ci_password@127.0.0.1:3306/bazi_ci_test?charset=utf8mb4
+      BAZI_TEST_MYSQL_URL: mysql+pymysql://bazi_ci:bazi_ci_password@127.0.0.1:3306/bazi_ci_test?charset=utf8mb4
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

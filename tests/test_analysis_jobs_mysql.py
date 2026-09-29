@@ -47,7 +47,7 @@ def mysql_database():
         database.dispose()
 
 
-def test_mysql_schema_and_skip_locked_claim_different_sections(mysql_database: Database) -> None:
+def test_mysql_schema_and_skip_locked_claim_different_jobs(mysql_database: Database) -> None:
     schema = inspect(mysql_database.engine)
     columns = {column["name"] for column in schema.get_columns("analysis_sections")}
     indexes = {index["name"] for index in schema.get_indexes("analysis_sections")}
@@ -61,45 +61,49 @@ def test_mysql_schema_and_skip_locked_claim_different_sections(mysql_database: D
     assert {"ix_analysis_sections_queue", "ix_analysis_sections_lease"} <= indexes
 
     with mysql_database.session() as session:
-        chart = ChartRecord(
-            request_json={"test": True},
-            snapshot_json={"test": True},
-            snapshot_hash=canonical_hash("mysql-chart"),
-        )
-        job = AnalysisJobRecord(
-            chart=chart,
-            status="pending",
-            model_id="fake-model",
-            provider="openai-compatible",
-            prompt_version="test-prompt-v1",
-            rule_version={"test": "1"},
-            request_hash=canonical_hash("mysql-job"),
-        )
-        for position, spec in enumerate(ANALYSIS_SECTIONS):
-            job.sections.append(
-                AnalysisSectionRecord(
-                    code=spec.code,
-                    title=spec.title,
-                    position=position,
-                    status="pending",
-                    request_hash=canonical_hash(f"mysql-section-{spec.code}"),
-                )
+        jobs = []
+        for suffix in ("one", "two"):
+            chart = ChartRecord(
+                request_json={"test": suffix},
+                snapshot_json={"test": suffix},
+                snapshot_hash=canonical_hash(f"mysql-chart-{suffix}"),
             )
-        session.add(job)
+            job = AnalysisJobRecord(
+                chart=chart,
+                status="pending",
+                model_id="fake-model",
+                provider="openai-compatible",
+                prompt_version="test-prompt-v1",
+                rule_version={"test": "1"},
+                request_hash=canonical_hash(f"mysql-job-{suffix}"),
+            )
+            for position, spec in enumerate(ANALYSIS_SECTIONS):
+                job.sections.append(
+                    AnalysisSectionRecord(
+                        code=spec.code,
+                        title=spec.title,
+                        position=position,
+                        status="pending",
+                        request_hash=canonical_hash(f"mysql-section-{suffix}-{spec.code}"),
+                    )
+                )
+            jobs.append(job)
+            session.add(job)
         session.commit()
-        for section in job.sections:
-            assert section.next_attempt_at is not None
-            scheduled_at = section.next_attempt_at
-            if scheduled_at.tzinfo is None:
-                scheduled_at = scheduled_at.replace(tzinfo=UTC)
-            assert abs((scheduled_at - utcnow()).total_seconds()) < 5
+        for job in jobs:
+            for section in job.sections:
+                assert section.next_attempt_at is not None
+                scheduled_at = section.next_attempt_at
+                if scheduled_at.tzinfo is None:
+                    scheduled_at = scheduled_at.replace(tzinfo=UTC)
+                assert abs((scheduled_at - utcnow()).total_seconds()) < 5
 
     settings = AnalysisQueueSettings(
         model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=1
     )
     worker = AnalysisWorker(mysql_database, UnusedProvider(), settings)
     now = utcnow()
-    statement = worker._claim_statement(now, worker._eligible_job_ids(now))
+    statement = worker._claim_job_statement(now)
     first_session = mysql_database.session_factory()
     second_session = mysql_database.session_factory()
     try:
