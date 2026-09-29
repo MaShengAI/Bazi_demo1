@@ -1,4 +1,5 @@
 import asyncio
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -239,12 +240,39 @@ def test_workers_claim_independent_sections_with_mysql_skip_locked(persisted_app
         assert {section.locked_by for section in running} == {"worker-one", "worker-two"}
         assert all(section.locked_at and section.lease_expires_at for section in running)
 
-    mysql_sql = str(
-        first._claim_statement(utcnow(), first._eligible_job_ids(utcnow())).compile(
-            dialect=mysql.dialect()
-        )
+    job_sql = str(first._lock_job_statement(first_claim[0]).compile(dialect=mysql.dialect()))
+    section_sql = str(
+        first._claim_statement(utcnow(), first_claim[0]).compile(dialect=mysql.dialect())
     )
-    assert "FOR UPDATE SKIP LOCKED" in mysql_sql
+    assert "FOR UPDATE SKIP LOCKED" in job_sql
+    assert "FOR UPDATE SKIP LOCKED" in section_sql
+
+
+def test_claims_are_fair_and_capped_at_four_sections_per_job(persisted_app) -> None:
+    client, database = persisted_app
+    job_ids = []
+    for index in range(3):
+        payload = chart_payload()
+        payload["name"] = f"公平调度测试{index}"
+        job_ids.append(client.post("/api/v1/analyses", json=payload).json()["job_id"])
+
+    worker = AnalysisWorker(
+        database,
+        FakeDetailedProvider(),
+        AnalysisQueueSettings(
+            model_id="fake-model",
+            prompt_version="test-prompt-v1",
+            max_attempts=1,
+            max_running_sections_per_job=4,
+        ),
+        worker_id="fair-worker",
+    )
+    claims = [worker._claim_section() for _ in range(12)]
+
+    assert all(claim is not None for claim in claims)
+    counts = Counter(claim[0] for claim in claims if claim is not None)
+    assert counts == Counter({job_id: 4 for job_id in job_ids})
+    assert worker._claim_section() is None
 
 
 def test_provider_failures_use_30_60_120_second_queue_backoff(persisted_app) -> None:
