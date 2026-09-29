@@ -103,13 +103,16 @@ def test_mysql_schema_and_skip_locked_claim_different_jobs(mysql_database: Datab
     )
     worker = AnalysisWorker(mysql_database, UnusedProvider(), settings)
     now = utcnow()
-    statement = worker._claim_job_statement(now)
+    candidate_ids = worker._eligible_job_ids(now)
+    assert len(candidate_ids) == 2
     first_session = mysql_database.session_factory()
     second_session = mysql_database.session_factory()
     try:
-        first = first_session.scalar(statement)
-        second = second_session.scalar(statement)
+        first = first_session.scalar(worker._lock_job_statement(candidate_ids[0]))
+        locked = second_session.scalar(worker._lock_job_statement(candidate_ids[0]))
+        second = second_session.scalar(worker._lock_job_statement(candidate_ids[1]))
         assert first is not None
+        assert locked is None
         assert second is not None
         assert first.id != second.id
     finally:

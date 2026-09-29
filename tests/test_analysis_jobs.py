@@ -240,7 +240,7 @@ def test_workers_claim_independent_sections_with_mysql_skip_locked(persisted_app
         assert {section.locked_by for section in running} == {"worker-one", "worker-two"}
         assert all(section.locked_at and section.lease_expires_at for section in running)
 
-    job_sql = str(first._claim_job_statement(utcnow()).compile(dialect=mysql.dialect()))
+    job_sql = str(first._lock_job_statement(first_claim[0]).compile(dialect=mysql.dialect()))
     section_sql = str(
         first._claim_statement(utcnow(), first_claim[0]).compile(dialect=mysql.dialect())
     )

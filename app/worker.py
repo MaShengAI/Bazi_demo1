@@ -112,7 +112,7 @@ class AnalysisWorker:
         self.heartbeat_file.parent.mkdir(parents=True, exist_ok=True)
         self.heartbeat_file.touch()
 
-    def _claim_job_statement(self, now: datetime):
+    def _eligible_job_ids(self, now: datetime) -> list[str]:
         due_section = exists().where(
             AnalysisSectionRecord.job_id == AnalysisJobRecord.id,
             AnalysisSectionRecord.status == "pending",
@@ -127,20 +127,34 @@ class AnalysisWorker:
             .correlate(AnalysisJobRecord)
             .scalar_subquery()
         )
+        with self.database.session() as session:
+            return list(
+                session.scalars(
+                    select(AnalysisJobRecord.id)
+                    .where(
+                        AnalysisJobRecord.cancel_requested.is_(False),
+                        AnalysisJobRecord.model_id == self.settings.model_id,
+                        AnalysisJobRecord.provider == self.settings.provider,
+                        AnalysisJobRecord.prompt_version == self.settings.prompt_version,
+                        due_section,
+                        running_count < self.settings.max_running_sections_per_job,
+                    )
+                    # Give capacity to reports with fewer running sections first.
+                    .order_by(running_count, AnalysisJobRecord.created_at, AnalysisJobRecord.id)
+                    .limit(1000)
+                ).all()
+            )
+
+    def _lock_job_statement(self, job_id: str):
         return (
             select(AnalysisJobRecord)
             .where(
+                AnalysisJobRecord.id == job_id,
                 AnalysisJobRecord.cancel_requested.is_(False),
                 AnalysisJobRecord.model_id == self.settings.model_id,
                 AnalysisJobRecord.provider == self.settings.provider,
                 AnalysisJobRecord.prompt_version == self.settings.prompt_version,
-                due_section,
-                running_count < self.settings.max_running_sections_per_job,
             )
-            # Give capacity to reports with fewer running sections first. The job-row
-            # lock makes the per-report limit atomic across all worker processes.
-            .order_by(running_count, AnalysisJobRecord.created_at, AnalysisJobRecord.id)
-            .limit(1)
             .with_for_update(skip_locked=True)
         )
 
@@ -164,35 +178,49 @@ class AnalysisWorker:
 
     def _claim_section(self) -> tuple[str, str] | None:
         now = utcnow()
-        with self.database.session() as session:
-            job = session.scalar(self._claim_job_statement(now))
-            if job is None:
-                return None
-            section = session.scalar(self._claim_statement(now, job.id))
-            if section is None or job.cancel_requested:
-                return None
-            section.status = "running"
-            section.locked_by = self.worker_id
-            section.locked_at = now
-            section.lease_expires_at = now + timedelta(seconds=self.settings.worker_lease_seconds)
-            section.next_attempt_at = None
-            section.error_code = None
-            section.error = None
-            job_id = section.job_id
-            section_id = section.id
-            job.status = "running"
-            job.started_at = job.started_at or now
-            job.finished_at = None
-            session.commit()
-        logger.info(
-            "section_claimed",
-            extra={
-                "worker_id": self.worker_id,
-                "job_id": job_id,
-                "section_id": section_id,
-            },
-        )
-        return job_id, section_id
+        for candidate_job_id in self._eligible_job_ids(now):
+            with self.database.session() as session:
+                # Lock one known primary key at a time. This avoids MySQL locking every
+                # row examined by an ORDER BY ... LIMIT ... FOR UPDATE query.
+                job = session.scalar(self._lock_job_statement(candidate_job_id))
+                if job is None:
+                    continue
+                running_count = session.scalar(
+                    select(func.count(AnalysisSectionRecord.id)).where(
+                        AnalysisSectionRecord.job_id == job.id,
+                        AnalysisSectionRecord.status == "running",
+                    )
+                )
+                if (running_count or 0) >= self.settings.max_running_sections_per_job:
+                    continue
+                section = session.scalar(self._claim_statement(now, job.id))
+                if section is None or job.cancel_requested:
+                    continue
+                section.status = "running"
+                section.locked_by = self.worker_id
+                section.locked_at = now
+                section.lease_expires_at = now + timedelta(
+                    seconds=self.settings.worker_lease_seconds
+                )
+                section.next_attempt_at = None
+                section.error_code = None
+                section.error = None
+                job_id = section.job_id
+                section_id = section.id
+                job.status = "running"
+                job.started_at = job.started_at or now
+                job.finished_at = None
+                session.commit()
+            logger.info(
+                "section_claimed",
+                extra={
+                    "worker_id": self.worker_id,
+                    "job_id": job_id,
+                    "section_id": section_id,
+                },
+            )
+            return job_id, section_id
+        return None
 
     def recover_expired_leases(self) -> int:
         now = utcnow()
