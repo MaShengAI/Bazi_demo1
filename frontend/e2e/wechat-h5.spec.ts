@@ -2,6 +2,15 @@ import { expect, test, type Page } from "@playwright/test";
 
 test.beforeEach(async ({ page }) => {
   await page.route("**/version.json*", (route) => route.fulfill({ json: { version: "0.2.0" } }));
+  await page.route("**/api/v1/auth/me", (route) => route.fulfill({
+    json: {
+      enabled: false,
+      authenticated: false,
+      require_for_analysis: false,
+      analysis_limit_per_24h: 0,
+      user: null,
+    },
+  }));
   await page.route("**/api/v1/locations/provinces", (route) => route.fulfill({ json: [{ code: "31", name: "上海市" }] }));
   await page.route("**/api/v1/locations/cities?*", (route) => route.fulfill({ json: [{ code: 3101, name: "上海市", longitude: 121.47, latitude: 31.23 }] }));
 });

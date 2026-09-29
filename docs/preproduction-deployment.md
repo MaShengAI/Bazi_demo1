@@ -7,7 +7,7 @@
 1. 准备一台安装了 Docker Engine、Compose v2 和 Python 3.11+ 的 Linux 服务器，建议至少 2 核、4 GB 内存和独立数据盘。
 2. 为预发布域名添加 A/AAAA 记录并指向服务器公网地址。若暂不稳定使用 IPv6，不要添加无法连通的 AAAA 记录。
 3. 云安全组与主机防火墙只对公网开放 TCP 80、443 和受限来源的运维 SSH 端口。不要开放 3306、8000。
-4. 在微信公众平台按实际能力配置业务域名；未来启用 JS-SDK 时再配置 JS 接口安全域名和网页授权域名。
+4. 启用公众号登录前，在微信公众平台配置网页授权域名；未来启用 JS-SDK 时再配置 JS 接口安全域名。详细步骤见 [微信公众号登录开发与上线](wechat-login.md)。
 
 ## 2. HTTPS
 
@@ -32,9 +32,9 @@ cp deploy/.env.preprod.example deploy/.env.preprod
 chmod 600 deploy/.env.preprod
 ```
 
-填写真实域名、证书目录、两个不同的 MySQL 随机密码和 DeepSeek 密钥。MySQL 密码必须为至少 20 位 URL-safe 字符。不要把密钥写入 `VITE_*`、源码、Compose build args 或公开配置。
+填写真实域名、证书目录、两个不同的 MySQL 随机密码和 DeepSeek 密钥。MySQL 密码必须为至少 20 位 URL-safe 字符。启用微信登录时还需填写 AppID、AppSecret 和 HTTPS 回调地址。不要把密钥写入 `VITE_*`、源码、Compose build args 或公开配置。
 
-Compose 的 `BAZI_LLM_API_KEY` 只在 `worker.environment` 中出现。API 只持有数据库 URL 与非敏感的模型/提示词版本；Web 只持有域名。应用日志不记录请求体、提示词、Authorization 或环境变量，并会对常见密钥、Bearer 值和数据库 URL 密码二次脱敏。
+Compose 的 `BAZI_LLM_API_KEY` 只在 `worker.environment` 中出现，`BAZI_WECHAT_APP_SECRET` 只在 `api.environment` 中出现；Web 和前端构建阶段都不持有这些密钥。应用日志不记录请求体、提示词、Authorization、Cookie 或环境变量，并会对常见密钥、Bearer 值和数据库 URL 密码二次脱敏。
 
 ## 4. 首次启动
 

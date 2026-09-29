@@ -10,6 +10,7 @@ test("从省市选择到 HTTP 202、job_id 轮询与结果恢复的完整 API �
     const url = String(input);
     const method = init?.method || "GET";
     calls.push({ url, method, body: typeof init?.body === "string" ? init.body : undefined });
+    if (url.endsWith("/auth/me")) return json(authDisabled);
     if (url.endsWith("/locations/provinces")) return json([{ code: "31", name: "上海市" }]);
     if (url.includes("/locations/cities")) return json([{ code: 3101, name: "上海市", longitude: 121.47, latitude: 31.23 }]);
     if (url.endsWith("/analyses") && method === "POST") {
@@ -57,3 +58,11 @@ function json(payload: unknown, status = 200) {
     headers: { "Content-Type": "application/json" },
   }));
 }
+
+const authDisabled = {
+  enabled: false,
+  authenticated: false,
+  require_for_analysis: false,
+  analysis_limit_per_24h: 0,
+  user: null,
+};

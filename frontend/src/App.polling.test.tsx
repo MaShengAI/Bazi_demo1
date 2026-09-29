@@ -12,6 +12,7 @@ test("页面进入后台暂停轮询，回到前台后立即恢复", async () =>
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = String(input);
     if (url.includes("version.json")) return response({ version: "0.2.0" });
+    if (url.endsWith("/auth/me")) return response(authDisabled);
     if (url.endsWith("/locations/provinces")) return response([]);
     if (url.endsWith("/status")) {
       statusCalls += 1;
@@ -41,3 +42,11 @@ test("页面进入后台暂停轮询，回到前台后立即恢复", async () =>
 function response(payload: unknown) {
   return Promise.resolve(new Response(JSON.stringify(payload), { status: 200, headers: { "Content-Type": "application/json" } }));
 }
+
+const authDisabled = {
+  enabled: false,
+  authenticated: false,
+  require_for_analysis: false,
+  analysis_limit_per_24h: 0,
+  user: null,
+};

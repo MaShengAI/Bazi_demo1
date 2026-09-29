@@ -11,7 +11,7 @@ import urllib.error
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 PLACEHOLDER = re.compile(r"(?:replace|example|changeme|替换)", re.I)
 DOMAIN = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$", re.I)
@@ -81,6 +81,46 @@ def check_environment(checks: Checks, values: dict[str, str]) -> None:
         "DeepSeek 密钥格式通过（未输出密钥）",
         "BAZI_LLM_API_KEY 仍是占位符、过短或包含非 ASCII 字符",
     )
+    check_wechat_environment(checks, values, domain)
+
+
+def check_wechat_environment(checks: Checks, values: dict[str, str], domain: str) -> None:
+    mode = values.get("BAZI_WECHAT_AUTH_MODE", "disabled").strip().lower()
+    checks.require(
+        mode in {"disabled", "mock", "live"},
+        "微信登录模式有效",
+        "BAZI_WECHAT_AUTH_MODE 必须是 disabled、mock 或 live",
+    )
+    if mode != "live":
+        return
+    app_id = values.get("BAZI_WECHAT_APP_ID", "")
+    app_secret = values.get("BAZI_WECHAT_APP_SECRET", "")
+    callback = values.get("BAZI_WECHAT_OAUTH_CALLBACK_URL", "")
+    parsed = urlsplit(callback)
+    checks.require(
+        bool(app_id) and not PLACEHOLDER.search(app_id),
+        "微信 AppID 已填写",
+        "live 模式必须填写真实 BAZI_WECHAT_APP_ID",
+    )
+    checks.require(
+        len(app_secret) >= 16 and not PLACEHOLDER.search(app_secret),
+        "微信 AppSecret 格式通过（未输出密钥）",
+        "live 模式必须填写真实 BAZI_WECHAT_APP_SECRET",
+    )
+    checks.require(
+        parsed.scheme == "https"
+        and parsed.hostname == domain
+        and parsed.path == "/api/v1/auth/wechat/callback"
+        and not parsed.query
+        and not parsed.fragment,
+        "微信 OAuth 回调地址与 H5 域名一致",
+        "BAZI_WECHAT_OAUTH_CALLBACK_URL 必须是当前 H5 域名的 HTTPS 回调地址",
+    )
+    checks.require(
+        values.get("BAZI_SESSION_COOKIE_SECURE", "true").strip().lower() == "true",
+        "微信登录 Cookie 强制使用 HTTPS",
+        "live 模式必须设置 BAZI_SESSION_COOKIE_SECURE=true",
+    )
 
 
 def check_certificates(checks: Checks, env_file: Path, values: dict[str, str]) -> None:
@@ -120,9 +160,12 @@ def check_frontend(checks: Checks, dist: Path, values: dict[str, str]) -> None:
         return
     needles = {
         "localhost": re.compile(r"(?:localhost|127\.0\.0\.1)", re.I),
-        "后端敏感变量名": re.compile(r"BAZI_(?:LLM_API_KEY|DATABASE_URL)", re.I),
+        "后端敏感变量名": re.compile(r"BAZI_(?:LLM_API_KEY|DATABASE_URL|WECHAT_APP_SECRET)", re.I),
     }
-    secret = values.get("BAZI_LLM_API_KEY", "")
+    secrets = {
+        "真实 DeepSeek 密钥": values.get("BAZI_LLM_API_KEY", ""),
+        "真实微信 AppSecret": values.get("BAZI_WECHAT_APP_SECRET", ""),
+    }
     hits: list[str] = []
     for path in dist.rglob("*"):
         if not path.is_file() or path.suffix.lower() not in TEXT_ARTIFACTS:
@@ -131,8 +174,9 @@ def check_frontend(checks: Checks, dist: Path, values: dict[str, str]) -> None:
         for label, pattern in needles.items():
             if pattern.search(content):
                 hits.append(f"{path.relative_to(dist)}:{label}")
-        if secret and secret in content:
-            hits.append(f"{path.relative_to(dist)}:真实 DeepSeek 密钥")
+        for label, secret in secrets.items():
+            if secret and secret in content:
+                hits.append(f"{path.relative_to(dist)}:{label}")
     checks.require(
         not hits, "前端产物无密钥、后端变量名或 localhost", f"前端产物命中: {', '.join(hits)}"
     )

@@ -2,6 +2,8 @@ import type {
   AnalysisAccepted,
   AnalysisResult,
   AnalysisStatus,
+  AnalysisHistoryItem,
+  AuthState,
   ApiErrorBody,
   ChartRequest,
   ChartResult,
@@ -32,6 +34,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs: number = 
     response = await fetch(path, {
       ...init,
       signal: controller.signal,
+      credentials: "same-origin",
       headers: {
         ...(init?.body ? { "Content-Type": "application/json" } : {}),
         "X-Bazi-Client-Version": APP_VERSION,
@@ -77,6 +80,10 @@ function friendlyError(code: string | undefined, message: string | undefined, st
     analysis_not_found: "未找到该分析任务，它可能已被删除。",
     analysis_not_retryable: "该板块当前不能重试。",
     section_not_retryable: "该板块当前不能重试。",
+    authentication_required: "请先使用微信登录，再生成 AI 分析。",
+    daily_analysis_limit_reached: "最近 24 小时的 AI 分析次数已用完，请稍后再试。",
+    wechat_auth_disabled: "微信登录尚未启用。",
+    wechat_auth_not_configured: "微信登录配置尚未完成。",
   };
   if (code && known[code]) return known[code];
   if (status === 429) return "请求较多，请稍后再试。";
@@ -85,6 +92,9 @@ function friendlyError(code: string | undefined, message: string | undefined, st
 }
 
 export const api = {
+  authState: () => request<AuthState>("/api/v1/auth/me"),
+  logout: () => request<void>("/api/v1/auth/logout", { method: "POST" }),
+  myAnalyses: () => request<AnalysisHistoryItem[]>("/api/v1/me/analyses"),
   provinces: () => request<Province[]>("/api/v1/locations/provinces"),
   cities: (province: string) =>
     request<City[]>(`/api/v1/locations/cities?province=${encodeURIComponent(province)}`),

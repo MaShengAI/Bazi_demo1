@@ -1,16 +1,26 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "./api";
 import { AnalysisPanel } from "./components/AnalysisPanel";
+import { AccountPanel } from "./components/AccountPanel";
 import { BirthForm } from "./components/BirthForm";
 import { ChartResultView } from "./components/ChartResultView";
 import { ConfirmDialog, type ConfirmDialogState } from "./components/ConfirmDialog";
 import { useMobileViewport } from "./hooks/useMobileViewport";
 import { useVersionCheck } from "./hooks/useVersionCheck";
-import type { AnalysisAccepted, AnalysisResult, AnalysisStatus, ChartRequest, ChartResult } from "./types";
+import type {
+  AnalysisAccepted,
+  AnalysisHistoryItem,
+  AnalysisResult,
+  AnalysisStatus,
+  AuthState,
+  ChartRequest,
+  ChartResult,
+} from "./types";
 import { getWeChatIntegrationState } from "./wechat";
 import { ACTIVE_JOB_STATUSES, nextPollingDelay } from "./polling";
 
 const STORAGE_KEY = "bazi.analysis.task.v1";
+const PENDING_ANALYSIS_KEY = "bazi.analysis.pending-login.v1";
 
 function clearSavedTask() {
   try {
@@ -44,6 +54,24 @@ function readSavedTask(): { jobId: string; chartId: string } | null {
     clearSavedTask();
   }
   return null;
+}
+
+function savePendingAnalysis(payload: ChartRequest) {
+  try {
+    sessionStorage.setItem(PENDING_ANALYSIS_KEY, JSON.stringify(payload));
+  } catch {
+    // Login still works; the user may need to submit the form again afterwards.
+  }
+}
+
+function takePendingAnalysis(): ChartRequest | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_ANALYSIS_KEY);
+    sessionStorage.removeItem(PENDING_ANALYSIS_KEY);
+    return raw ? (JSON.parse(raw) as ChartRequest) : null;
+  } catch {
+    return null;
+  }
 }
 
 function acceptedStatus(accepted: AnalysisAccepted): AnalysisStatus {
@@ -81,10 +109,33 @@ export function App() {
   );
   const [networkMessage, setNetworkMessage] = useState("");
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
+  const [authState, setAuthState] = useState<AuthState | null>(null);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [accountBusy, setAccountBusy] = useState(false);
+  const [history, setHistory] = useState<AnalysisHistoryItem[]>([]);
   const submissionLock = useRef(false);
   const version = useVersionCheck();
   useMobileViewport();
   const weChatState = getWeChatIntegrationState();
+
+  useEffect(() => {
+    let active = true;
+    api.authState()
+      .then((nextAuth) => {
+        if (!active) return;
+        setAuthState(nextAuth);
+        if (nextAuth.authenticated) {
+          const pending = takePendingAnalysis();
+          if (pending) void submit(pending, "analysis", true);
+        }
+      })
+      .catch(() => {
+        // Auth is an optional capability; deterministic charting stays available.
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const onOnline = () => {
@@ -199,7 +250,70 @@ export function App() {
     };
   }, [jobId, pollRevision]);
 
-  async function submit(payload: ChartRequest, mode: "chart" | "analysis") {
+  function beginLogin() {
+    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+    window.location.assign(`/api/v1/auth/wechat/start?return_to=${encodeURIComponent(returnTo)}`);
+  }
+
+  async function toggleAccount() {
+    const nextOpen = !accountOpen;
+    setAccountOpen(nextOpen);
+    if (!nextOpen) return;
+    setAccountBusy(true);
+    try {
+      setHistory(await api.myAnalyses());
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  async function logout() {
+    setAccountBusy(true);
+    try {
+      await api.logout();
+      setAuthState((current) => current ? { ...current, authenticated: false, user: null } : current);
+      setHistory([]);
+      setAccountOpen(false);
+      setMessage("已退出微信账号，本机已生成的页面仍可继续查看。 ");
+    } catch (reason) {
+      setError((reason as Error).message);
+    } finally {
+      setAccountBusy(false);
+    }
+  }
+
+  function openHistoryItem(item: AnalysisHistoryItem) {
+    saveTask(item.job_id, item.chart_id);
+    setJobId(item.job_id);
+    setChartId(item.chart_id);
+    setAnalysisStatus(null);
+    setAnalysisResult(null);
+    setAccountOpen(false);
+    setPollRevision((value) => value + 1);
+    window.setTimeout(
+      () => document.getElementById("analysis-title")?.scrollIntoView?.({ behavior: "smooth" }),
+      0,
+    );
+  }
+
+  async function submit(
+    payload: ChartRequest,
+    mode: "chart" | "analysis",
+    skipAuthCheck = false,
+  ) {
+    if (
+      !skipAuthCheck
+      && mode === "analysis"
+      && authState?.enabled
+      && authState.require_for_analysis
+      && !authState.authenticated
+    ) {
+      savePendingAnalysis(payload);
+      beginLogin();
+      return;
+    }
     if (submissionLock.current) return;
     submissionLock.current = true;
     setBusy(mode);
@@ -323,6 +437,18 @@ export function App() {
           <a href="#analysis">AI 分析</a>
         </nav>
         <span className="api-state"><i /> {weChatState.isWeChat ? "微信 H5" : "移动 H5"} · 规则引擎</span>
+        {authState ? (
+          <AccountPanel
+            auth={authState}
+            open={accountOpen}
+            busy={accountBusy}
+            history={history}
+            onToggle={() => void toggleAccount()}
+            onLogin={beginLogin}
+            onLogout={() => void logout()}
+            onOpenReport={openHistoryItem}
+          />
+        ) : null}
       </header>
 
       <main id="top">
