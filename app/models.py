@@ -33,6 +33,9 @@ class ChartRecord(Base):
     __tablename__ = "charts"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     request_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     snapshot_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
@@ -42,6 +45,92 @@ class ChartRecord(Base):
 
     jobs: Mapped[list[AnalysisJobRecord]] = relationship(
         back_populates="chart", cascade="all, delete-orphan", passive_deletes=True
+    )
+    user: Mapped[UserRecord | None] = relationship(back_populates="charts")
+
+
+class UserRecord(Base):
+    __tablename__ = "users"
+    __table_args__ = (CheckConstraint("status IN ('active','disabled')", name="ck_users_status"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    display_name: Mapped[str] = mapped_column(String(191), nullable=False, default="微信用户")
+    avatar_url: Mapped[str | None] = mapped_column(String(1024))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="active")
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    charts: Mapped[list[ChartRecord]] = relationship(back_populates="user")
+    wechat_identities: Mapped[list[WechatIdentityRecord]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+    sessions: Mapped[list[AuthSessionRecord]] = relationship(
+        back_populates="user", cascade="all, delete-orphan", passive_deletes=True
+    )
+
+
+class WechatIdentityRecord(Base):
+    __tablename__ = "wechat_identities"
+    __table_args__ = (
+        UniqueConstraint("app_id", "openid", name="uq_wechat_identities_app_openid"),
+        Index("ix_wechat_identities_unionid", "unionid"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    app_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    openid: Mapped[str] = mapped_column(String(128), nullable=False)
+    unionid: Mapped[str | None] = mapped_column(String(128))
+    profile_json: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+    user: Mapped[UserRecord] = relationship(back_populates="wechat_identities")
+
+
+class AuthSessionRecord(Base):
+    __tablename__ = "auth_sessions"
+    __table_args__ = (
+        UniqueConstraint("token_hash", name="uq_auth_sessions_token_hash"),
+        Index("ix_auth_sessions_expiry", "expires_at", "revoked_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    user_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    user: Mapped[UserRecord] = relationship(back_populates="sessions")
+
+
+class OAuthStateRecord(Base):
+    __tablename__ = "oauth_states"
+    __table_args__ = (Index("ix_oauth_states_expiry", "expires_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    state_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    return_to: Mapped[str] = mapped_column(String(500), nullable=False, default="/")
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
     )
 
 

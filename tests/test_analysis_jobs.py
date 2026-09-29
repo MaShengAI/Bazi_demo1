@@ -354,7 +354,7 @@ def test_cancel_and_delete_birth_data_with_cascade(persisted_app) -> None:
         assert session.scalar(select(LLMCallLogRecord)) is None
 
 
-def test_alembic_migration_creates_the_four_core_tables(
+def test_alembic_migration_creates_core_and_auth_tables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     database_url = f"sqlite+pysqlite:///{(tmp_path / 'migration.sqlite3').as_posix()}"
@@ -367,9 +367,14 @@ def test_alembic_migration_creates_the_four_core_tables(
         section_columns = {
             column["name"] for column in inspect(database.engine).get_columns("analysis_sections")
         }
+        chart_columns = {
+            column["name"] for column in inspect(database.engine).get_columns("charts")
+        }
     finally:
         database.dispose()
     assert {"charts", "analysis_jobs", "analysis_sections", "llm_call_logs"} <= tables
+    assert {"users", "wechat_identities", "auth_sessions", "oauth_states"} <= tables
+    assert "user_id" in chart_columns
     assert {
         "failure_count",
         "locked_at",

@@ -1,13 +1,14 @@
 # 微信 H5 集成边界
 
-当前版本是标准 HTTPS H5，不接入微信登录、支付或分享，也不会加载微信 JS-SDK。
+当前版本是标准 HTTPS H5，并已接入可开关的微信公众号网页授权登录；暂不接入支付或分享，也不会加载微信 JS-SDK。登录配置见 [微信公众号登录开发与上线](wechat-login.md)。
 
 ## 当前保证
 
 - 前端只请求同源 `/api/v1` 与 `/health`，生产构建不包含 localhost。
-- 页面仅在浏览器本地保存 `job_id`、`chart_id`；不保存出生表单、数据库密码或模型密钥。
+- 页面仅在浏览器本地保存用于恢复进度的 `job_id`、`chart_id`；登录跳转前的出生表单仅临时保存在当前标签页的 sessionStorage，恢复提交后立即删除。
 - DeepSeek 密钥只注入 `worker`，API 容器和 Web 容器都不持有该密钥。
-- `frontend/src/wechat.ts` 是后续微信能力的唯一前端适配边界。
+- 微信 `AppSecret` 只注入 API 容器，worker、Web 容器和前端都不持有该密钥。
+- 登录会话使用随机 HttpOnly、Secure、SameSite=Lax Cookie；数据库只保存令牌哈希，不保存明文会话令牌或网页授权 access_token。
 
 ## 后续接入 JS-SDK
 

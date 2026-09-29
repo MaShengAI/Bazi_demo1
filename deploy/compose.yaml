@@ -56,7 +56,17 @@ services:
       context: ..
       dockerfile: deploy/Dockerfile.api
     restart: unless-stopped
-    environment: *app-environment
+    environment:
+      <<: *app-environment
+      # AppSecret is intentionally available only to the API, never web or worker.
+      BAZI_WECHAT_AUTH_MODE: ${BAZI_WECHAT_AUTH_MODE:-disabled}
+      BAZI_WECHAT_APP_ID: ${BAZI_WECHAT_APP_ID:-}
+      BAZI_WECHAT_APP_SECRET: ${BAZI_WECHAT_APP_SECRET:-}
+      BAZI_WECHAT_OAUTH_CALLBACK_URL: ${BAZI_WECHAT_OAUTH_CALLBACK_URL:-}
+      BAZI_WECHAT_OAUTH_SCOPE: ${BAZI_WECHAT_OAUTH_SCOPE:-snsapi_base}
+      BAZI_SESSION_COOKIE_SECURE: ${BAZI_SESSION_COOKIE_SECURE:-true}
+      BAZI_AUTH_REQUIRED_FOR_ANALYSIS: ${BAZI_AUTH_REQUIRED_FOR_ANALYSIS:-false}
+      BAZI_USER_ANALYSIS_LIMIT_PER_24H: ${BAZI_USER_ANALYSIS_LIMIT_PER_24H:-0}
     expose:
       - "8000"
     depends_on:

@@ -164,3 +164,28 @@ export interface ApiErrorBody {
   };
   detail?: unknown;
 }
+
+export interface AuthUser {
+  id: string;
+  display_name: string;
+  avatar_url: string | null;
+}
+
+export interface AuthState {
+  enabled: boolean;
+  authenticated: boolean;
+  require_for_analysis: boolean;
+  analysis_limit_per_24h: number;
+  user: AuthUser | null;
+}
+
+export interface AnalysisHistoryItem {
+  job_id: string;
+  chart_id: string;
+  status: JobStatus;
+  name: string | null;
+  birth_local_datetime: string | null;
+  completed_sections: number;
+  total_sections: number;
+  created_at: string;
+}

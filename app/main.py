@@ -13,7 +13,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app import __version__
 from app.api.routes import router
-from app.config import AnalysisQueueSettings
+from app.config import AnalysisQueueSettings, AuthSettings
 from app.database import Database
 from app.domain.calendar.solar_terms import SolarTermDataError, SolarTermRepository
 from app.domain.timezone.service import TimeNormalizationError
@@ -21,6 +21,7 @@ from app.observability import configure_logging, request_id_context
 from app.repositories.locations import LocationRepository
 from app.services.analysis_jobs import AnalysisJobError, AnalysisJobService
 from app.services.analysis_service import AnalysisServiceError
+from app.services.auth import AuthError, AuthService
 from app.services.chart_service import ChartService, ChartServiceError
 
 configure_logging()
@@ -44,6 +45,9 @@ async def lifespan(app: FastAPI):
     app.state.chart_service = chart_service
     database = Database.from_env()
     app.state.database = database
+    auth_settings = AuthSettings.from_env()
+    app.state.auth_settings = auth_settings
+    app.state.auth_service = AuthService(database, auth_settings) if database is not None else None
     app.state.analysis_job_service = (
         AnalysisJobService(database, chart_service, AnalysisQueueSettings.from_env())
         if database is not None
@@ -130,6 +134,11 @@ async def analysis_error(_: Request, exc: AnalysisServiceError) -> JSONResponse:
 @app.exception_handler(AnalysisJobError)
 async def analysis_job_error(_: Request, exc: AnalysisJobError) -> JSONResponse:
     return error_response(exc.status_code, exc.code, str(exc), exc.details)
+
+
+@app.exception_handler(AuthError)
+async def auth_error(_: Request, exc: AuthError) -> JSONResponse:
+    return error_response(exc.status_code, exc.code, str(exc))
 
 
 @app.exception_handler(TimeNormalizationError)

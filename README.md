@@ -66,7 +66,7 @@ pnpm test:e2e
 
 H5 已实现中文分钟级时间选择器、刘海屏与底部安全区、软键盘和横竖屏适配、自定义确认弹窗、后台暂停和前台恢复轮询、弱网指数退避、离线提示、隐私确认，以及微信缓存旧版本时的刷新提醒。端到端测试覆盖 390×844 微信 iPhone、393×851 微信 Android 和 320×568 小屏环境。
 
-微信 JS-SDK 当前未接入，未来签名接口与密钥边界见 `docs/wechat-h5.md`。
+H5 已支持可开关的微信公众号网页授权登录、账号报告历史和报告归属隔离。认证审核期间保持 `BAZI_WECHAT_AUTH_MODE=disabled`，可在隔离开发环境用 `mock` 完成联调；审核通过并配置网页授权域名后再切换 `live`。完整配置和验收步骤见 [微信公众号登录开发与上线](docs/wechat-login.md)。微信 JS-SDK 当前未接入，签名接口与密钥边界见 `docs/wechat-h5.md`。
 
 ## 微信 H5 预发布部署
 
@@ -86,7 +86,7 @@ docker compose --env-file deploy/.env.preprod -f deploy/compose.yaml up -d --bui
 python deploy/preflight.py --env-file deploy/.env.preprod --skip-ports --live
 ```
 
-`migrate` 容器只执行 `alembic upgrade head`，不会运行 downgrade、drop、清空卷或删除已有数据。DeepSeek 密钥只注入 `worker`；`api`、`web` 和前端构建阶段都收不到该变量。升级前必须先备份，应用回滚默认不回退数据库结构。
+`migrate` 容器只执行 `alembic upgrade head`，不会运行 downgrade、drop、清空卷或删除已有数据。DeepSeek 密钥只注入 `worker`；微信 `AppSecret` 只注入 `api`；`web`、worker 和前端构建阶段都收不到微信密钥。升级前必须先备份，应用回滚默认不回退数据库结构。
 
 完整的域名解析、服务器、防火墙、HTTPS、启动、迁移、备份、恢复、升级、回滚和故障排查步骤见 [预发布部署手册](docs/preproduction-deployment.md)。真实微信验收见 [微信真机验收清单](docs/wechat-preproduction-checklist.md)。
 

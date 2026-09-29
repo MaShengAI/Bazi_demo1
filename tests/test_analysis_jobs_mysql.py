@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import os
-from datetime import UTC
+from datetime import UTC, timedelta
 
 import pytest
 from sqlalchemy import delete, inspect
@@ -60,6 +60,7 @@ def test_mysql_schema_and_skip_locked_claim_different_jobs(mysql_database: Datab
     } <= columns
     assert {"ix_analysis_sections_queue", "ix_analysis_sections_lease"} <= indexes
 
+    queued_at = utcnow()
     with mysql_database.session() as session:
         jobs = []
         for suffix in ("one", "two"):
@@ -84,6 +85,7 @@ def test_mysql_schema_and_skip_locked_claim_different_jobs(mysql_database: Datab
                         title=spec.title,
                         position=position,
                         status="pending",
+                        next_attempt_at=queued_at,
                         request_hash=canonical_hash(f"mysql-section-{suffix}-{spec.code}"),
                     )
                 )
@@ -102,7 +104,10 @@ def test_mysql_schema_and_skip_locked_claim_different_jobs(mysql_database: Datab
         model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=1
     )
     worker = AnalysisWorker(mysql_database, UnusedProvider(), settings)
-    now = utcnow()
+    # Use a fixed instant after the explicit queue timestamp. This keeps the
+    # MySQL integration test deterministic even when the database or runner
+    # rounds timestamp precision differently.
+    now = queued_at + timedelta(seconds=1)
     candidate_ids = worker._eligible_job_ids(now)
     assert len(candidate_ids) == 2
     first_session = mysql_database.session_factory()

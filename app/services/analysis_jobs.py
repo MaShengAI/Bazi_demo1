@@ -3,10 +3,10 @@ from __future__ import annotations
 import hashlib
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -61,18 +61,27 @@ class AnalysisJobService:
         self.chart_service = chart_service
         self.settings = settings
 
-    def submit(self, request: ChartRequest) -> Submission:
+    def submit(
+        self,
+        request: ChartRequest,
+        *,
+        user_id: str | None = None,
+        analysis_limit_per_24h: int = 0,
+    ) -> Submission:
         chart = self.chart_service.calculate(request)
         rule_version = cast(dict[str, Any], chart["ruleset_versions"])
         snapshot_hash = canonical_hash(chart)
-        request_hash = canonical_hash(
-            {
-                "chart_snapshot": chart,
-                "model_id": self.settings.model_id,
-                "prompt_version": self.settings.prompt_version,
-                "rule_version": rule_version,
-            }
-        )
+        hash_payload: dict[str, object] = {
+            "chart_snapshot": chart,
+            "model_id": self.settings.model_id,
+            "prompt_version": self.settings.prompt_version,
+            "rule_version": rule_version,
+        }
+        # Anonymous hashes retain the legacy format. Authenticated reports include
+        # their owner so identical birth data never deduplicates across users.
+        if user_id is not None:
+            hash_payload["user_id"] = user_id
+        request_hash = canonical_hash(hash_payload)
         with self.database.session() as session:
             existing = session.scalar(
                 select(AnalysisJobRecord).where(AnalysisJobRecord.request_hash == request_hash)
@@ -80,7 +89,26 @@ class AnalysisJobService:
             if existing is not None:
                 return Submission(existing.id, existing.chart_id, existing.status, True)
 
+            if user_id is not None and analysis_limit_per_24h > 0:
+                since = datetime.now(UTC).replace(tzinfo=None) - timedelta(hours=24)
+                recent_count = session.scalar(
+                    select(func.count(AnalysisJobRecord.id))
+                    .join(ChartRecord, AnalysisJobRecord.chart_id == ChartRecord.id)
+                    .where(
+                        ChartRecord.user_id == user_id,
+                        AnalysisJobRecord.created_at >= since,
+                    )
+                )
+                if int(recent_count or 0) >= analysis_limit_per_24h:
+                    raise AnalysisJobError(
+                        429,
+                        "daily_analysis_limit_reached",
+                        "已达到最近24小时的AI分析次数上限",
+                        {"limit": analysis_limit_per_24h},
+                    )
+
             chart_record = ChartRecord(
+                user_id=user_id,
                 request_json=request.model_dump(mode="json"),
                 snapshot_json=chart,
                 snapshot_hash=snapshot_hash,
@@ -125,12 +153,12 @@ class AnalysisJobService:
                 return Submission(existing.id, existing.chart_id, existing.status, True)
             return Submission(job.id, chart_record.id, job.status, False)
 
-    def status(self, job_id: str) -> dict[str, object]:
-        job = self._load_job(job_id, include_chart=False)
+    def status(self, job_id: str, *, actor_user_id: str | None = None) -> dict[str, object]:
+        job = self._load_job(job_id, include_chart=True, actor_user_id=actor_user_id)
         return _serialize_status(job)
 
-    def result(self, job_id: str) -> dict[str, object]:
-        job = self._load_job(job_id, include_chart=True)
+    def result(self, job_id: str, *, actor_user_id: str | None = None) -> dict[str, object]:
+        job = self._load_job(job_id, include_chart=True, actor_user_id=actor_user_id)
         return {
             **_serialize_status(job),
             "chart": job.chart.snapshot_json,
@@ -138,16 +166,21 @@ class AnalysisJobService:
             "disclaimer": ANALYSIS_DISCLAIMER,
         }
 
-    def retry_section(self, job_id: str, code: str) -> Submission:
+    def retry_section(
+        self, job_id: str, code: str, *, actor_user_id: str | None = None
+    ) -> Submission:
         with self.database.session() as session:
             job = session.scalar(
                 select(AnalysisJobRecord)
                 .where(AnalysisJobRecord.id == job_id)
-                .options(selectinload(AnalysisJobRecord.sections))
+                .options(
+                    selectinload(AnalysisJobRecord.sections), joinedload(AnalysisJobRecord.chart)
+                )
                 .with_for_update()
             )
             if job is None:
                 raise AnalysisJobError(404, "analysis_not_found", "分析任务不存在")
+            _ensure_job_access(job, actor_user_id)
             section = next((item for item in job.sections if item.code == code), None)
             if section is None:
                 raise AnalysisJobError(404, "analysis_section_not_found", "分析板块不存在")
@@ -177,16 +210,19 @@ class AnalysisJobService:
             session.commit()
             return Submission(job.id, job.chart_id, job.status, False)
 
-    def cancel(self, job_id: str) -> dict[str, object]:
+    def cancel(self, job_id: str, *, actor_user_id: str | None = None) -> dict[str, object]:
         with self.database.session() as session:
             job = session.scalar(
                 select(AnalysisJobRecord)
                 .where(AnalysisJobRecord.id == job_id)
-                .options(selectinload(AnalysisJobRecord.sections))
+                .options(
+                    selectinload(AnalysisJobRecord.sections), joinedload(AnalysisJobRecord.chart)
+                )
                 .with_for_update()
             )
             if job is None:
                 raise AnalysisJobError(404, "analysis_not_found", "分析任务不存在")
+            _ensure_job_access(job, actor_user_id)
             if job.status in {"completed", "failed", "cancelled"}:
                 raise AnalysisJobError(
                     409,
@@ -207,23 +243,65 @@ class AnalysisJobService:
             session.commit()
             return _serialize_status(job)
 
-    def delete_job(self, job_id: str) -> None:
+    def delete_job(self, job_id: str, *, actor_user_id: str | None = None) -> None:
         with self.database.session() as session:
-            job = session.get(AnalysisJobRecord, job_id)
+            job = session.scalar(
+                select(AnalysisJobRecord)
+                .where(AnalysisJobRecord.id == job_id)
+                .options(joinedload(AnalysisJobRecord.chart))
+            )
             if job is None:
                 raise AnalysisJobError(404, "analysis_not_found", "分析任务不存在")
+            _ensure_job_access(job, actor_user_id)
             session.delete(job)
             session.commit()
 
-    def delete_chart(self, chart_id: str) -> None:
+    def delete_chart(self, chart_id: str, *, actor_user_id: str | None = None) -> None:
         with self.database.session() as session:
             chart = session.get(ChartRecord, chart_id)
             if chart is None:
                 raise AnalysisJobError(404, "chart_not_found", "持久化命盘不存在")
+            if chart.user_id is not None and chart.user_id != actor_user_id:
+                raise AnalysisJobError(404, "chart_not_found", "持久化命盘不存在")
             session.delete(chart)
             session.commit()
 
-    def _load_job(self, job_id: str, *, include_chart: bool) -> AnalysisJobRecord:
+    def list_for_user(self, user_id: str, *, limit: int = 20) -> list[dict[str, object]]:
+        with self.database.session() as session:
+            jobs = session.scalars(
+                select(AnalysisJobRecord)
+                .join(ChartRecord, AnalysisJobRecord.chart_id == ChartRecord.id)
+                .where(ChartRecord.user_id == user_id)
+                .options(
+                    joinedload(AnalysisJobRecord.chart),
+                    selectinload(AnalysisJobRecord.sections),
+                )
+                .order_by(AnalysisJobRecord.created_at.desc())
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "job_id": job.id,
+                    "chart_id": job.chart_id,
+                    "status": job.status,
+                    "name": job.chart.request_json.get("name"),
+                    "birth_local_datetime": job.chart.request_json.get("birth_local_datetime"),
+                    "completed_sections": sum(
+                        section.status == "completed" for section in job.sections
+                    ),
+                    "total_sections": len(job.sections),
+                    "created_at": job.created_at,
+                }
+                for job in jobs
+            ]
+
+    def _load_job(
+        self,
+        job_id: str,
+        *,
+        include_chart: bool,
+        actor_user_id: str | None = None,
+    ) -> AnalysisJobRecord:
         options: list[object] = [selectinload(AnalysisJobRecord.sections)]
         if include_chart:
             options.append(joinedload(AnalysisJobRecord.chart))
@@ -234,8 +312,15 @@ class AnalysisJobService:
             job = session.scalar(statement)
             if job is None:
                 raise AnalysisJobError(404, "analysis_not_found", "分析任务不存在")
+            _ensure_job_access(job, actor_user_id)
             # All requested relations are eagerly loaded before the session closes.
             return job
+
+
+def _ensure_job_access(job: AnalysisJobRecord, actor_user_id: str | None) -> None:
+    if job.chart.user_id is not None and job.chart.user_id != actor_user_id:
+        # Do not reveal that another user's report exists.
+        raise AnalysisJobError(404, "analysis_not_found", "分析任务不存在")
 
 
 def _serialize_status(job: AnalysisJobRecord) -> dict[str, object]:
