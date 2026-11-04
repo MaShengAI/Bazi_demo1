@@ -9,7 +9,8 @@ const labels: Record<JobStatus | SectionStatus, string> = {
   cancelled: "已取消",
 };
 
-export function StatusBadge({ status }: { status: JobStatus | SectionStatus }) {
+export function StatusBadge({ status, hideCompleted = false }: { status: JobStatus | SectionStatus; hideCompleted?: boolean }) {
+  if (hideCompleted && status === "completed") return null;
   return (
     <span className={`status-badge status-${status}`} data-testid={`status-${status}`}>
       <span className="status-dot" aria-hidden="true" />

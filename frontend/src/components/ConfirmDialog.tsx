@@ -1,9 +1,11 @@
+import { useBackDismiss } from "../customerNavigation";
 import { useEffect } from "react";
 
 export interface ConfirmDialogState {
   title: string;
   description: string;
   confirmLabel: string;
+  cancelLabel?: string;
   danger?: boolean;
   action: () => void;
 }
@@ -17,6 +19,7 @@ export function ConfirmDialog({
   busy: boolean;
   onCancel: () => void;
 }) {
+  useBackDismiss(Boolean(dialog), onCancel, busy);
   useEffect(() => {
     if (!dialog) return;
     const previous = document.body.style.overflow;
@@ -39,7 +42,7 @@ export function ConfirmDialog({
         <h3 id="confirm-title">{dialog.title}</h3>
         <p id="confirm-description">{dialog.description}</p>
         <div className="confirm-actions">
-          <button className="button button-outline" type="button" onClick={onCancel} disabled={busy}>暂不操作</button>
+          <button className="button button-outline" type="button" onClick={onCancel} disabled={busy}>{dialog.cancelLabel || "暂不操作"}</button>
           <button className={`button ${dialog.danger ? "button-danger" : "button-primary"}`} type="button" onClick={dialog.action} disabled={busy}>
             {busy && <span className="spinner" aria-hidden="true" />}{busy ? "正在处理" : dialog.confirmLabel}
           </button>

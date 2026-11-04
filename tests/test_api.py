@@ -37,6 +37,43 @@ def test_chart_api_returns_auditable_result() -> None:
     assert luck_hits
     assert all(len(hit["rule_id"]) == 6 and hit["rule_id"].startswith("SS-") for hit in luck_hits)
     assert payload["calculation_trace"]
+    assert all(
+        year["secondary_stars"]
+        for cycle in payload["major_luck_cycles"]
+        for year in cycle["annual_years"]
+    )
+
+
+def test_annual_branch_stars_reuse_rules_without_mutating_old_snapshots() -> None:
+    from copy import deepcopy
+
+    from app.services.chart_service import with_annual_branch_stars
+
+    snapshot = {
+        "pillars": {"day": {"heavenly_stem": "丙"}},
+        "major_luck_cycles": [
+            {"annual_years": [{"pillar": "甲" + branch} for branch in "子丑寅卯辰巳午未申酉戌亥"]}
+        ],
+    }
+    original = deepcopy(snapshot)
+    result = with_annual_branch_stars(snapshot)
+    years = result["major_luck_cycles"][0]["annual_years"]
+    assert [year["secondary_stars"][0] for year in years] == [
+        "正官",
+        "伤官",
+        "偏印",
+        "正印",
+        "食神",
+        "比肩",
+        "劫财",
+        "伤官",
+        "偏财",
+        "正财",
+        "食神",
+        "七杀",
+    ]
+    assert years[2]["secondary_stars"] == ["偏印", "比肩", "食神"]
+    assert snapshot == original
 
 
 def test_api_rejects_non_minute_input() -> None:

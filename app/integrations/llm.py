@@ -23,6 +23,8 @@ class LLMCompletion:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     request_id: str | None = None
+    finish_reason: str | None = None
+    reasoning_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -143,23 +145,41 @@ class OpenAICompatibleLLM:
             )
         try:
             data = response.json()
-            content = data["choices"][0]["message"]["content"]
+            choice = data["choices"][0]
+            content = choice["message"]["content"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise LLMProviderError("llm_invalid_response", "AI模型返回格式无效") from exc
-        if not isinstance(content, str) or not content.strip():
-            raise LLMProviderError("llm_empty_response", "AI模型没有返回分析内容")
         usage = data.get("usage") if isinstance(data, dict) else None
         if not isinstance(usage, dict):
             usage = {}
         request_id = response.headers.get("x-request-id")
         if request_id is None and isinstance(data, dict) and isinstance(data.get("id"), str):
             request_id = data["id"]
+        finish_reason = _finish_reason(choice.get("finish_reason"))
+        token_details = usage.get("completion_tokens_details")
+        reasoning_tokens = (
+            _optional_int(token_details.get("reasoning_tokens"))
+            if isinstance(token_details, dict)
+            else None
+        )
+        metadata = {
+            "request_id": request_id,
+            "prompt_tokens": _optional_int(usage.get("prompt_tokens")),
+            "completion_tokens": _optional_int(usage.get("completion_tokens")),
+            "total_tokens": _optional_int(usage.get("total_tokens")),
+            "finish_reason": finish_reason,
+            "reasoning_tokens": reasoning_tokens,
+        }
+        if not isinstance(content, str) or not content.strip():
+            raise LLMProviderError("llm_empty_response", "AI模型没有返回分析内容", metadata)
         return LLMCompletion(
             content=content.strip(),
             prompt_tokens=_optional_int(usage.get("prompt_tokens")),
             completion_tokens=_optional_int(usage.get("completion_tokens")),
             total_tokens=_optional_int(usage.get("total_tokens")),
             request_id=request_id,
+            finish_reason=finish_reason,
+            reasoning_tokens=reasoning_tokens,
         )
 
     async def close(self) -> None:
@@ -168,4 +188,16 @@ class OpenAICompatibleLLM:
 
 
 def _optional_int(value: object) -> int | None:
-    return value if isinstance(value, int) and value >= 0 else None
+    return value if type(value) is int and value >= 0 else None
+
+
+def _finish_reason(value: object) -> str | None:
+    allowed = {
+        "stop",
+        "length",
+        "content_filter",
+        "tool_calls",
+        "insufficient_system_resource",
+        "aborted",
+    }
+    return value if isinstance(value, str) and value in allowed else None

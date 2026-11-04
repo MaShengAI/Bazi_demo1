@@ -1,0 +1,52 @@
+# Optional override: only after isolated testing and merchant configuration.
+# API alone receives the two read-only key files outside the website/repository.
+# Do not mount their parent directory: it also contains the private payment.env.
+services:
+  api:
+    environment:
+      BAZI_PAY_MODE: ${BAZI_PAY_MODE:-disabled}
+      BAZI_PAY_ACCEPT_NEW_ORDERS: ${BAZI_PAY_ACCEPT_NEW_ORDERS:-false}
+      BAZI_PAY_ALLOWED_USER_IDS: ${BAZI_PAY_ALLOWED_USER_IDS:-}
+      BAZI_PAY_REFUNDS_ENABLED: ${BAZI_PAY_REFUNDS_ENABLED:-false}
+      BAZI_PAY_REFUND_NOTIFY_URL: ${BAZI_PAY_REFUND_NOTIFY_URL:-}
+      BAZI_PAY_MCHID: ${BAZI_PAY_MCHID:-}
+      BAZI_PAY_SERIAL: ${BAZI_PAY_SERIAL:-}
+      BAZI_PAY_PRIVATE_KEY_PATH: /run/bazi-pay/apiclient_key.pem
+      BAZI_PAY_PUBLIC_KEY_ID: ${BAZI_PAY_PUBLIC_KEY_ID:-}
+      BAZI_PAY_PUBLIC_KEY_PATH: /run/bazi-pay/wechatpay_public.pem
+      BAZI_PAY_API_V3_KEY: ${BAZI_PAY_API_V3_KEY:-}
+      BAZI_PAY_NOTIFY_URL: ${BAZI_PAY_NOTIFY_URL:-}
+      BAZI_PAY_SINGLE_PRICE: ${BAZI_PAY_SINGLE_PRICE:-8800}
+      BAZI_PAY_DOUBLE_PRICE: ${BAZI_PAY_DOUBLE_PRICE:-15800}
+      BAZI_PAY_FAMILY_PRICE: ${BAZI_PAY_FAMILY_PRICE:-22800}
+    volumes:
+      - type: bind
+        source: /root/bazi-payment-secrets/apiclient_key.pem
+        target: /run/bazi-pay/apiclient_key.pem
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: /root/bazi-payment-secrets/wechatpay_public.pem
+        target: /run/bazi-pay/wechatpay_public.pem
+        read_only: true
+        bind:
+          create_host_path: false
+
+  coupons:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.api
+    command: ["python", "-m", "app.coupon_scheduler"]
+    restart: unless-stopped
+    environment:
+      BAZI_DATABASE_URL: mysql+pymysql://${MYSQL_USER:-bazi}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE:-bazi}?charset=utf8mb4
+      BAZI_PAY_MODE: ${BAZI_PAY_MODE:-disabled}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"

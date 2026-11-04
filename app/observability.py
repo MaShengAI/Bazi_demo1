@@ -12,7 +12,8 @@ request_id_context: contextvars.ContextVar[str] = contextvars.ContextVar("reques
 
 _SENSITIVE_KEY = re.compile(
     r"(?:^|[_-])(?:api[_-]?key|authorization|cookie|password|secret|token|access[_-]?token|"
-    r"refresh[_-]?token|database[_-]?url)(?:$|[_-])",
+    r"refresh[_-]?token|database[_-]?url|api[_-]?v3[_-]?key|private[_-]?key|"
+    r"prepay[_-]?id|paySign|signature|openid)(?:$|[_-])",
     re.I,
 )
 _BEARER = re.compile(r"(?i)(bearer\s+)[^\s,;]+")

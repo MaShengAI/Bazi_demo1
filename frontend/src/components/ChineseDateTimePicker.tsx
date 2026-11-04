@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
+import { flushSync } from "react-dom";
+import { PickerSheet, WheelPicker } from "./WheelPicker";
+import { LUNAR_YEARS, lunarDayLabel, lunarMonthLabel, lunarToSolar, selectableLunarDays, selectableLunarMonths, solarToLunar } from "../calendar";
 
 interface ChineseDateTimePickerProps {
   value: string;
-  onChange: (value: string) => void;
+  onChange: (value: string, calendar: "solar" | "lunar") => void;
   disabled?: boolean;
   error?: string;
 }
@@ -23,40 +26,48 @@ const MINUTES = range(0, 59);
 export function ChineseDateTimePicker({ value, onChange, disabled, error }: ChineseDateTimePickerProps) {
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<DateParts>(() => parseValue(value));
-  const days = useMemo(() => range(1, daysInMonth(draft.year, draft.month)), [draft.year, draft.month]);
+  const [mode, setMode] = useState<"solar" | "lunar">("solar");
+  const [savedMode, setSavedMode] = useState<"solar" | "lunar">("solar");
+  const months = useMemo(() => mode === "solar" ? MONTHS : selectableLunarMonths(draft.year).map(item => item.month), [mode, draft.year]);
+  const days = useMemo(() => mode === "solar" ? range(1, daysInMonth(draft.year, draft.month)) : selectableLunarDays(draft.year, draft.month), [mode, draft.year, draft.month]);
 
-  useEffect(() => {
-    if (!open) return;
-    const previous = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.body.style.overflow = previous;
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [open]);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
 
   function update(key: keyof DateParts, next: number) {
     setDraft((current) => {
       const updated = { ...current, [key]: next };
-      updated.day = Math.min(updated.day, daysInMonth(updated.year, updated.month));
+      if (mode === "lunar") {
+        const available = selectableLunarMonths(updated.year).map(item => item.month);
+        if (!available.includes(updated.month)) updated.month = available.includes(Math.abs(updated.month)) ? Math.abs(updated.month) : available[0];
+        const validDays = selectableLunarDays(updated.year, updated.month);
+        updated.day = Math.max(validDays[0], Math.min(updated.day, validDays[validDays.length - 1]));
+      } else updated.day = Math.min(updated.day, daysInMonth(updated.year, updated.month));
       return updated;
     });
   }
 
   function showPicker() {
-    setDraft(parseValue(value));
+    const solar = parseValue(value);
+    setMode(savedMode);
+    setDraft(savedMode === "lunar" ? { ...solar, ...solarToLunar(solar) } : solar);
     setOpen(true);
   }
 
   function confirm() {
-    onChange(formatValue(draft));
+    const solar = mode === "lunar" ? { ...draft, ...lunarToSolar(draft) } : draft;
+    onChange(formatValue(solar), mode);
+    setSavedMode(mode);
     setOpen(false);
   }
 
+  function switchMode(next: "solar" | "lunar") {
+    if (next === mode) return;
+    flushSync(() => window.dispatchEvent(new Event("commit-picker-wheels")));
+    setDraft(current => ({ ...current, ...(next === "lunar" ? solarToLunar(current) : lunarToSolar(current)) }));
+    setMode(next);
+  }
+  const lunarLabel = (parts: DateParts) => `农历 ${parts.year}年${lunarMonthLabel(parts.month)}${lunarDayLabel(parts.day)} ${pad(parts.hour)}:${pad(parts.minute)}`;
+  const triggerText = value && savedMode === "lunar" ? lunarLabel({ ...parseValue(value), ...solarToLunar(parseValue(value)) }) : value ? formatChinese(value) : "请选择出生日期";
   return (
     <>
       <button
@@ -68,59 +79,20 @@ export function ChineseDateTimePicker({ value, onChange, disabled, error }: Chin
         aria-expanded={open}
         aria-invalid={Boolean(error)}
       >
-        <span>{value ? formatChinese(value) : "请选择出生日期与时间"}</span>
-        <i aria-hidden="true">日历</i>
+        <span>{triggerText}</span>
       </button>
 
-      {open && (
-        <div className="modal-backdrop picker-backdrop" role="presentation" onMouseDown={(event) => {
-          if (event.target === event.currentTarget) setOpen(false);
-        }}>
-          <section className="bottom-sheet date-picker-sheet" role="dialog" aria-modal="true" aria-labelledby="date-picker-title">
-            <header className="sheet-header">
-              <button type="button" onClick={() => setOpen(false)}>取消</button>
-              <div>
-                <h3 id="date-picker-title">选择出生时间</h3>
-                <p>当地钟表时间，精确到分钟</p>
-              </div>
-              <button type="button" className="sheet-confirm" onClick={confirm}>确定</button>
-            </header>
-            <div className="picker-summary" aria-live="polite">{formatChinese(formatValue(draft))}</div>
-            <div className="picker-grid">
-              <PickerSelect label="年" value={draft.year} options={YEARS} onChange={(next) => update("year", next)} />
-              <PickerSelect label="月" value={draft.month} options={MONTHS} onChange={(next) => update("month", next)} />
-              <PickerSelect label="日" value={draft.day} options={days} onChange={(next) => update("day", next)} />
-              <PickerSelect label="时" value={draft.hour} options={HOURS} onChange={(next) => update("hour", next)} pad />
-              <PickerSelect label="分" value={draft.minute} options={MINUTES} onChange={(next) => update("minute", next)} pad />
-            </div>
-            <p className="picker-range">支持 1901年1月1日 00:00 至 2100年12月31日 23:59</p>
-          </section>
+      {open && <PickerSheet title="请选择出生时间" onClose={() => setOpen(false)} onConfirm={confirm}>
+        <div className="plum-calendar-switch" role="group" aria-label="历法">
+          <button type="button" aria-pressed={mode === "solar"} onClick={() => switchMode("solar")}>公历</button>
+          <button type="button" aria-pressed={mode === "lunar"} onClick={() => switchMode("lunar")}>农历</button>
         </div>
-      )}
+        <div className="plum-date-wheels">
+          {([['year', '年', mode === 'solar' ? YEARS : LUNAR_YEARS], ['month', '月', months], ['day', '日', days], ['hour', '时', HOURS], ['minute', '分', MINUTES]] as const).map(([key, label, values]) =>
+            <WheelPicker key={key} label={label} value={String(draft[key])} options={values.map(n => ({ value: String(n), label: mode === 'lunar' && key === 'month' ? lunarMonthLabel(n) : mode === 'lunar' && key === 'day' ? lunarDayLabel(n) : `${key === 'hour' || key === 'minute' ? pad(n) : n}${label}` }))} onChange={value => update(key, Number(value))} />)}
+        </div>
+      </PickerSheet>}
     </>
-  );
-}
-
-function PickerSelect({
-  label,
-  value,
-  options,
-  onChange,
-  pad = false,
-}: {
-  label: string;
-  value: number;
-  options: number[];
-  onChange: (value: number) => void;
-  pad?: boolean;
-}) {
-  return (
-    <label className="picker-column">
-      <span>{label}</span>
-      <select aria-label={label} value={value} onChange={(event) => onChange(Number(event.target.value))}>
-        {options.map((option) => <option key={option} value={option}>{pad ? String(option).padStart(2, "0") : option}</option>)}
-      </select>
-    </label>
   );
 }
 

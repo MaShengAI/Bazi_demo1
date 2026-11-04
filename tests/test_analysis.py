@@ -75,7 +75,7 @@ def test_in_process_analysis_service_still_omits_name() -> None:
     assert all(section["char_count"] == 1500 for section in analysis["sections"])
     assert all(section["length_status"] == "short" for section in analysis["sections"])
     assert len(analysis["warnings"]) == 8
-    assert len(provider.prompts) == 16
+    assert len(provider.prompts) == 24
     assert all("隐私姓名" not in prompt for prompt in provider.prompts)
     assert provider.closed
 
@@ -135,3 +135,75 @@ def test_openai_compatible_client_rejects_non_ascii_placeholder_key() -> None:
         await provider.close()
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize("content", ["正常正文", None, ""])
+def test_completion_metadata_survives_empty_content_without_reasoning_text(content) -> None:
+    def handler(request):
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "req-metadata"},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": content,
+                            "reasoning_content": "PRIVATE_REASONING_SENTINEL",
+                        },
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 42,
+                    "completion_tokens": 30000,
+                    "total_tokens": 30042,
+                    "completion_tokens_details": {"reasoning_tokens": 27000},
+                },
+            },
+        )
+
+    async def run():
+        async with httpx.AsyncClient(
+            base_url="https://example.test/",
+            transport=httpx.MockTransport(handler),
+        ) as client:
+            provider = OpenAICompatibleLLM(
+                LLMSettings(
+                    api_key="test-key",
+                    base_url="https://example.test",
+                    model="deepseek-flash",
+                ),
+                client=client,
+            )
+            if content:
+                completion = await provider.complete_detailed("system", "user")
+                assert completion.finish_reason == "length"
+                assert completion.reasoning_tokens == 27000
+                assert "PRIVATE_REASONING_SENTINEL" not in repr(completion)
+            else:
+                with pytest.raises(LLMProviderError) as caught:
+                    await provider.complete_detailed("system", "user")
+                assert caught.value.code == "llm_empty_response"
+                assert caught.value.details["completion_tokens"] == 30000
+                assert caught.value.details["finish_reason"] == "length"
+                assert caught.value.details["reasoning_tokens"] == 27000
+                assert "PRIVATE_REASONING_SENTINEL" not in repr(caught.value.details)
+
+    asyncio.run(run())
+
+
+def test_in_process_supplement_failure_retains_first_draft() -> None:
+    class SupplementProvider(FakeProvider):
+        async def complete(self, system_prompt, user_prompt):
+            self.prompts.append(user_prompt)
+            if len(self.prompts) > 1:
+                raise LLMProviderError("llm_timeout", "超时")
+            return "可读正文" * 400
+
+    with TestClient(app):
+        provider = SupplementProvider()
+        service = AnalysisService(app.state.chart_service, provider)
+        chart = app.state.chart_service.calculate(ChartRequest.model_validate(chart_payload()))
+        section = asyncio.run(service._generate_section(ANALYSIS_SECTIONS[0], chart))
+    assert section["content"] == "可读正文" * 400
+    assert len(provider.prompts) == 2

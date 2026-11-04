@@ -1,4 +1,4 @@
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { vi } from "vitest";
 import { App } from "./App";
 import { analysisFixture } from "./test/fixtures";
@@ -11,7 +11,7 @@ test("页面进入后台暂停轮询，回到前台后立即恢复", async () =>
   let statusCalls = 0;
   vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
     const url = String(input);
-    if (url.includes("version.json")) return response({ version: "0.2.0" });
+    if (url.includes("version.json")) return response({ version: "0.3.0" });
     if (url.endsWith("/auth/me")) return response(authDisabled);
     if (url.endsWith("/locations/provinces")) return response([]);
     if (url.endsWith("/status")) {
@@ -26,7 +26,9 @@ test("页面进入后台暂停轮询，回到前台后立即恢复", async () =>
   });
 
   render(<App />);
+  expect(screen.queryByText(/正在恢复上次的分析任务/)).not.toBeInTheDocument();
   await vi.waitFor(() => expect(statusCalls).toBe(1));
+  expect(screen.queryByText(/正在恢复上次的分析任务/)).not.toBeInTheDocument();
   visibility = "hidden";
   document.dispatchEvent(new Event("visibilitychange"));
   await vi.advanceTimersByTimeAsync(5000);
