@@ -117,6 +117,8 @@ class ReviewService:
             for job in jobs:
                 if complete(session, job):
                     chart = session.get(ChartRecord, job.chart_id)
+                    if chart is None:
+                        continue
                     items.append(
                         {
                             "job_id": job.id,
@@ -147,6 +149,7 @@ class ReviewService:
             # All account awards serialize on the same user row, including network retries.
             lock_user(session, user_id)
             user = session.get(UserRecord, user_id)
+            assert user is not None  # lock_user already verified this account.
             previous = session.scalar(select(ReportReview).where(ReportReview.job_id == job_id))
             if previous:
                 if previous.user_id != user_id:
@@ -164,7 +167,7 @@ class ReviewService:
                 if job
                 else None
             )
-            if chart is None or chart.user_id != user_id:
+            if job is None or chart is None or chart.user_id != user_id:
                 raise PaymentError(404, "report_not_found", "未找到报告")
             if not complete(session, job):
                 raise PaymentError(409, "report_not_complete", "完整解读完成后才可评价")

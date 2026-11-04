@@ -26,7 +26,8 @@ def test_upgrade_preserves_old_grants_and_enables_independent_rewards(tmp_path, 
         for period, source in [("2026-11-02", None), (None, uuid.uuid4().hex)]:
             s.execute(
                 text(
-                    "INSERT INTO weekly_coupons (id,user_id,period_start,source_refund_id,expires_at) "
+                    "INSERT INTO weekly_coupons "
+                    "(id,user_id,period_start,source_refund_id,expires_at) "
                     "VALUES (:id,:uid,:period,:source,'2099-01-01')"
                 ),
                 {"id": str(uuid.uuid4()), "uid": uid, "period": period, "source": source},

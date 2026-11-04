@@ -140,21 +140,41 @@ def test_openai_compatible_client_rejects_non_ascii_placeholder_key() -> None:
 @pytest.mark.parametrize("content", ["正常正文", None, ""])
 def test_completion_metadata_survives_empty_content_without_reasoning_text(content) -> None:
     def handler(request):
-        return httpx.Response(200, headers={"x-request-id": "req-metadata"}, json={
-            "choices": [{"message": {
-                "content": content, "reasoning_content": "PRIVATE_REASONING_SENTINEL",
-            }, "finish_reason": "length"}],
-            "usage": {"prompt_tokens": 42, "completion_tokens": 30000, "total_tokens": 30042,
-                      "completion_tokens_details": {"reasoning_tokens": 27000}},
-        })
+        return httpx.Response(
+            200,
+            headers={"x-request-id": "req-metadata"},
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": content,
+                            "reasoning_content": "PRIVATE_REASONING_SENTINEL",
+                        },
+                        "finish_reason": "length",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 42,
+                    "completion_tokens": 30000,
+                    "total_tokens": 30042,
+                    "completion_tokens_details": {"reasoning_tokens": 27000},
+                },
+            },
+        )
 
     async def run():
         async with httpx.AsyncClient(
-            base_url="https://example.test/", transport=httpx.MockTransport(handler),
+            base_url="https://example.test/",
+            transport=httpx.MockTransport(handler),
         ) as client:
-            provider = OpenAICompatibleLLM(LLMSettings(
-                api_key="test-key", base_url="https://example.test", model="deepseek-flash",
-            ), client=client)
+            provider = OpenAICompatibleLLM(
+                LLMSettings(
+                    api_key="test-key",
+                    base_url="https://example.test",
+                    model="deepseek-flash",
+                ),
+                client=client,
+            )
             if content:
                 completion = await provider.complete_detailed("system", "user")
                 assert completion.finish_reason == "length"
@@ -168,6 +188,7 @@ def test_completion_metadata_survives_empty_content_without_reasoning_text(conte
                 assert caught.value.details["finish_reason"] == "length"
                 assert caught.value.details["reasoning_tokens"] == 27000
                 assert "PRIVATE_REASONING_SENTINEL" not in repr(caught.value.details)
+
     asyncio.run(run())
 
 

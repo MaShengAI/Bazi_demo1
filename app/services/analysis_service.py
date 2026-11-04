@@ -294,7 +294,9 @@ class AnalysisService:
                 break
             if attempt < self.max_attempts:
                 length_hint = build_revision_hint(
-                    content, minimum=self.minimum_chars, maximum=self.maximum_chars,
+                    content,
+                    minimum=self.minimum_chars,
+                    maximum=self.maximum_chars,
                     target=self.target_chars,
                 )
 
@@ -336,8 +338,11 @@ def section_length_status(count: int) -> str:
 
 
 def prefer_section_content(
-    existing: str, candidate: str, *,
-    minimum: int = ANALYSIS_MINIMUM_CHARS, maximum: int = ANALYSIS_MAXIMUM_CHARS,
+    existing: str,
+    candidate: str,
+    *,
+    minimum: int = ANALYSIS_MINIMUM_CHARS,
+    maximum: int = ANALYSIS_MAXIMUM_CHARS,
 ) -> str:
     """Keep a readable draft; replace it only with a result closer to the length range."""
     if not candidate:
@@ -353,17 +358,21 @@ def prefer_section_content(
 
 
 def build_revision_hint(
-    content: str, *, minimum: int = ANALYSIS_MINIMUM_CHARS,
-    maximum: int = ANALYSIS_MAXIMUM_CHARS, target: int = ANALYSIS_TARGET_CHARS,
+    content: str,
+    *,
+    minimum: int = ANALYSIS_MINIMUM_CHARS,
+    maximum: int = ANALYSIS_MAXIMUM_CHARS,
+    target: int = ANALYSIS_TARGET_CHARS,
 ) -> str:
     count = _character_count(content)
     direction = (
         "逐项检查写作重点，补足缺失的解释、现实情境和可执行建议；"
         "不要重复堆字，也不要编造排盘数据以外的事实"
-        if count < minimum else "删去重复论述，保留各项重点及具体建议"
+        if count < minimum
+        else "删去重复论述，保留各项重点及具体建议"
     )
     # Bound draft context even if an upstream response is unexpectedly enormous.
-    draft = json.dumps(content[:maximum * 2], ensure_ascii=False)
+    draft = json.dumps(content[: maximum * 2], ensure_ascii=False)
     return (
         f"\n上一版正文为{count}字符。请{direction}。"
         f"输出一篇完整替换稿，目标约{target}字符，至少{minimum}、不超过{maximum}字符；"

@@ -159,7 +159,8 @@ class OpenAICompatibleLLM:
         token_details = usage.get("completion_tokens_details")
         reasoning_tokens = (
             _optional_int(token_details.get("reasoning_tokens"))
-            if isinstance(token_details, dict) else None
+            if isinstance(token_details, dict)
+            else None
         )
         metadata = {
             "request_id": request_id,
@@ -170,9 +171,7 @@ class OpenAICompatibleLLM:
             "reasoning_tokens": reasoning_tokens,
         }
         if not isinstance(content, str) or not content.strip():
-            raise LLMProviderError(
-                "llm_empty_response", "AI模型没有返回分析内容", metadata
-            )
+            raise LLMProviderError("llm_empty_response", "AI模型没有返回分析内容", metadata)
         return LLMCompletion(
             content=content.strip(),
             prompt_tokens=_optional_int(usage.get("prompt_tokens")),
@@ -194,7 +193,11 @@ def _optional_int(value: object) -> int | None:
 
 def _finish_reason(value: object) -> str | None:
     allowed = {
-        "stop", "length", "content_filter", "tool_calls",
-        "insufficient_system_resource", "aborted",
+        "stop",
+        "length",
+        "content_filter",
+        "tool_calls",
+        "insufficient_system_resource",
+        "aborted",
     }
     return value if isinstance(value, str) and value in allowed else None

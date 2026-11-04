@@ -7,8 +7,8 @@ from datetime import timedelta
 from threading import Barrier
 
 import pytest
+from mysql_target import require_financial_test_database
 from sqlalchemy import delete, func, select
-from sqlalchemy.engine import make_url
 
 from app.commerce_models import (
     CardLedger,
@@ -29,15 +29,7 @@ def mysql_codes():
     url = os.getenv("BAZI_TEST_MYSQL_URL", "").strip()
     if not url:
         pytest.skip("BAZI_TEST_MYSQL_URL is not configured")
-    parsed = make_url(url)
-    if (
-        parsed.get_backend_name() != "mysql"
-        or parsed.database != "bazi_payment_test"
-        or parsed.username != "bazi_payment_tester"
-        or parsed.host != "bazi-preprod-mysql-1"
-        or parsed.port != 3306
-    ):
-        pytest.fail("Requires the existing restricted MySQL test database/user")
+    require_financial_test_database(url)
     db = Database(url)
     users = [str(uuid.uuid4()) for _ in range(8)]
     keys = []

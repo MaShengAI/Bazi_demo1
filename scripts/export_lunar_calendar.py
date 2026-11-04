@@ -1,7 +1,8 @@
 """Export month boundaries from the project's pinned lunar-python, without timezone math."""
+
+import json
 from datetime import date
 from importlib.metadata import version
-import json
 from pathlib import Path
 
 from lunar_python import LunarYear, Solar
@@ -24,6 +25,13 @@ for year in range(1900, 2101):
     years[str(year)] = row
 target = root / "frontend/src/data/lunar-months.json"
 target.parent.mkdir(parents=True, exist_ok=True)
-target.write_text(json.dumps({"source": f"lunar-python {version('lunar-python')}",
-                             "years": years}, ensure_ascii=False, separators=(",", ":")) + "\n", encoding="utf-8")
+target.write_text(
+    json.dumps(
+        {"source": f"lunar-python {version('lunar-python')}", "years": years},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    + "\n",
+    encoding="utf-8",
+)
 print(f"EXPORTED_LUNAR_MONTHS: {len(years)} years; {target.stat().st_size} bytes")

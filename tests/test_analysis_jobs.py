@@ -199,7 +199,10 @@ def test_partial_result_survives_and_failed_section_can_retry(persisted_app) -> 
     ],
 )
 def test_worker_saves_draft_and_bounds_supplements(
-    persisted_app, responses, expected_chars, expected_calls,
+    persisted_app,
+    responses,
+    expected_chars,
+    expected_calls,
 ) -> None:
     client, database = persisted_app
     accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
@@ -208,10 +211,12 @@ def test_worker_saves_draft_and_bounds_supplements(
         async def complete_detailed(self, system_prompt, user_prompt):
             if self.calls:
                 with database.session() as session:
-                    saved = session.scalar(select(AnalysisSectionRecord).where(
-                        AnalysisSectionRecord.job_id == accepted["job_id"],
-                        AnalysisSectionRecord.code == "personality",
-                    ))
+                    saved = session.scalar(
+                        select(AnalysisSectionRecord).where(
+                            AnalysisSectionRecord.job_id == accepted["job_id"],
+                            AnalysisSectionRecord.code == "personality",
+                        )
+                    )
                     assert saved.content == responses[0]
                     assert saved.status == "running"
                 assert "上一版正文（JSON字符串）" in user_prompt
@@ -224,9 +229,15 @@ def test_worker_saves_draft_and_bounds_supplements(
             return LLMCompletion(content=response, finish_reason="stop")
 
     provider = SequenceProvider()
-    worker = AnalysisWorker(database, provider, AnalysisQueueSettings(
-        model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=3,
-    ))
+    worker = AnalysisWorker(
+        database,
+        provider,
+        AnalysisQueueSettings(
+            model_id="fake-model",
+            prompt_version="test-prompt-v1",
+            max_attempts=3,
+        ),
+    )
     assert asyncio.run(worker.run_once())
     result = client.get(f"/api/v1/analyses/{accepted['job_id']}").json()
     section = next(s for s in result["sections"] if s["code"] == "personality")
@@ -235,10 +246,12 @@ def test_worker_saves_draft_and_bounds_supplements(
     assert section["error"] is None
     assert len(provider.calls) == expected_calls
     with database.session() as session:
-        saved = session.scalar(select(AnalysisSectionRecord).where(
-            AnalysisSectionRecord.job_id == accepted["job_id"],
-            AnalysisSectionRecord.code == "personality",
-        ))
+        saved = session.scalar(
+            select(AnalysisSectionRecord).where(
+                AnalysisSectionRecord.job_id == accepted["job_id"],
+                AnalysisSectionRecord.code == "personality",
+            )
+        )
         assert saved.next_attempt_at is None
         assert saved.locked_by is None
         assert saved.attempt_count == expected_calls
@@ -267,23 +280,37 @@ def test_saved_draft_survives_expired_lease_and_failed_recovery(persisted_app) -
 
 
 def test_empty_response_logs_usage_and_stop_reason_without_reasoning_text(
-    persisted_app, caplog,
+    persisted_app,
+    caplog,
 ) -> None:
     client, database = persisted_app
     accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
 
     class EmptyProvider(FakeDetailedProvider):
         async def complete_detailed(self, system_prompt, user_prompt):
-            raise LLMProviderError("llm_empty_response", "空内容", {
-                "request_id": "req-empty", "prompt_tokens": 42,
-                "completion_tokens": 30000, "total_tokens": 30042,
-                "finish_reason": "length", "reasoning_tokens": 30000,
-                "reasoning_content": "NEVER_LOG_REASONING_SENTINEL",
-            })
+            raise LLMProviderError(
+                "llm_empty_response",
+                "空内容",
+                {
+                    "request_id": "req-empty",
+                    "prompt_tokens": 42,
+                    "completion_tokens": 30000,
+                    "total_tokens": 30042,
+                    "finish_reason": "length",
+                    "reasoning_tokens": 30000,
+                    "reasoning_content": "NEVER_LOG_REASONING_SENTINEL",
+                },
+            )
 
-    worker = AnalysisWorker(database, EmptyProvider(), AnalysisQueueSettings(
-        model_id="fake-model", prompt_version="test-prompt-v1", retry_delays_seconds=(),
-    ))
+    worker = AnalysisWorker(
+        database,
+        EmptyProvider(),
+        AnalysisQueueSettings(
+            model_id="fake-model",
+            prompt_version="test-prompt-v1",
+            retry_delays_seconds=(),
+        ),
+    )
     with caplog.at_level("INFO", logger="bazi.worker"):
         asyncio.run(worker.run_once())
     with database.session() as session:

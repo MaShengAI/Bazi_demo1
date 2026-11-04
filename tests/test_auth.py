@@ -183,8 +183,11 @@ def test_profile_authorization_updates_existing_account_without_losing_reports(a
     user_id = client.get("/api/v1/auth/me").json()["user"]["id"]
     accepted = client.post("/api/v1/analyses", json=chart_payload())
     current, token = app.state.auth_service.login_wechat_user(
-        WechatProfile(openid="local-wechat-user", nickname="新的授权昵称",
-                      avatar_url="https://thirdwx.qlogo.cn/example-avatar")
+        WechatProfile(
+            openid="local-wechat-user",
+            nickname="新的授权昵称",
+            avatar_url="https://thirdwx.qlogo.cn/example-avatar",
+        )
     )
     assert current.id == user_id
     client.cookies.set("bazi_session", token)

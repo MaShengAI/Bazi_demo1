@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
+from mysql_target import require_financial_test_database
 from sqlalchemy import delete, func, select
-from sqlalchemy.engine import make_url
 from test_reviews import payload, ready
 
 from app.commerce_models import ReportReview, ReviewModeration, WeeklyCoupon
@@ -21,9 +21,7 @@ def isolated():
     url = os.environ.get("BAZI_TEST_MYSQL_URL", "")
     if not url:
         pytest.skip("Restricted independent MySQL test database required")
-    parsed = make_url(url)
-    assert parsed.database == "bazi_payment_test" and parsed.username == "bazi_payment_tester"
-    assert parsed.host == "bazi-preprod-mysql-1" and parsed.port == 3306
+    require_financial_test_database(url)
     db = Database(url)
     uid = str(uuid.uuid4())
     with db.session() as session:

@@ -58,12 +58,15 @@ def batch_json(batch: RedemptionBatch) -> dict:
 
 
 def receipt(code: RedemptionCode, batch: RedemptionBatch, repeated: bool) -> dict:
+    redeemed_at = code.redeemed_at
+    if redeemed_at is None:
+        raise PaymentError(409, "code_unavailable", "兑换尚未完成，请刷新后核对")
     return {
         "kind": batch.kind,
         "value": batch.value,
         "already_redeemed": repeated,
-        "redeemed_at": iso(code.redeemed_at),
-        "coupon_expires_at": iso(code.redeemed_at + timedelta(days=7))
+        "redeemed_at": iso(redeemed_at),
+        "coupon_expires_at": iso(redeemed_at + timedelta(days=7))
         if batch.kind == "coupon"
         else None,
     }
@@ -159,7 +162,7 @@ class RedemptionService:
                     RedemptionAttempt.created_at > now - timedelta(hours=1),
                 )
             )
-            if count >= 5 or hourly >= 30:
+            if (count or 0) >= 5 or (hourly or 0) >= 30:
                 raise PaymentError(429, "redemption_rate_limited", "兑换操作过于频繁，请稍后再试")
             session.add(RedemptionAttempt(id=uuid.uuid4().hex, user_id=user_id, created_at=now))
             session.commit()
@@ -173,6 +176,8 @@ class RedemptionService:
             if code is None:
                 raise PaymentError(400, "code_unavailable", "兑换码无效、已使用、已过期或已停用")
             batch = session.get(RedemptionBatch, code.batch_id)
+            if batch is None:
+                raise PaymentError(400, "code_unavailable", "兑换码无效、已使用、已过期或已停用")
             if code.redeemed_by == user_id:
                 return receipt(code, batch, True)
             if code.deleted_at or code.redeemed_by or code.disabled_at or now >= batch.expires_at:
@@ -317,7 +322,7 @@ class RedemptionService:
                 if code.disabled_at:
                     continue
                 batch = session.get(RedemptionBatch, code.batch_id)
-                if code.redeemed_by or now >= batch.expires_at:
+                if batch is None or code.redeemed_by or now >= batch.expires_at:
                     raise PaymentError(
                         409,
                         "code_not_unused",

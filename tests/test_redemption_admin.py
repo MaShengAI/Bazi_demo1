@@ -1,6 +1,7 @@
 import uuid
 from dataclasses import replace
-from test_admin import admin_app, login, ORIGIN  # noqa: F401 - shared pytest fixture
+
+from test_admin import ORIGIN, admin_app, login  # noqa: F401 - shared pytest fixture
 
 
 def test_admin_generation_origin_validation_listing_disable(admin_app):  # noqa: F811

@@ -29,7 +29,9 @@ def coupon_json(coupon: WeeklyCoupon) -> dict[str, Any]:
         "id": coupon.id,
         "amount": coupon.amount,
         "expires_at": iso(coupon.expires_at),
-        "source": "redemption" if coupon.source_code_id else ("refund" if coupon.source_refund_id else "weekly"),
+        "source": "redemption"
+        if coupon.source_code_id
+        else ("refund" if coupon.source_refund_id else "weekly"),
         "status": "used"
         if coupon.redeemed_order_id
         else ("reserved" if coupon.reserved_order_id else "available"),
@@ -98,7 +100,11 @@ class PaymentService:
             return result
 
     def create(
-        self, user_id: str, product_code: str, use_coupon: bool, idempotency_key: str,
+        self,
+        user_id: str,
+        product_code: str,
+        use_coupon: bool,
+        idempotency_key: str,
         coupon_id: str | None = None,
     ) -> dict:
         self.require_enabled()
@@ -117,8 +123,11 @@ class PaymentService:
                 )
             )
             if existing:
-                if (existing.product_code != product_code or bool(existing.coupon_id) != use_coupon
-                        or (coupon_id is not None and existing.coupon_id != coupon_id)):
+                if (
+                    existing.product_code != product_code
+                    or bool(existing.coupon_id) != use_coupon
+                    or (coupon_id is not None and existing.coupon_id != coupon_id)
+                ):
                     raise PaymentError(409, "idempotency_conflict", "请勿使用同一请求创建不同订单")
                 return order_json(existing)
             # One outstanding order prevents accidental double purchase on lost responses.
@@ -135,9 +144,12 @@ class PaymentService:
             coupon = preferred_coupon(coupons, now) or (coupons[0] if coupons else weekly)
             if coupon_id is not None:
                 # Never substitute a different voucher for an explicit selection.
-                coupon = next((c for c in coupons if c.id == coupon_id), None)
-                if coupon is None:
-                    raise PaymentError(409, "coupon_unavailable", "所选优惠券已失效或被占用，请重新选择")
+                selected_coupon = next((c for c in coupons if c.id == coupon_id), None)
+                if selected_coupon is None:
+                    raise PaymentError(
+                        409, "coupon_unavailable", "所选优惠券已失效或被占用，请重新选择"
+                    )
+                coupon = selected_coupon
             identity = session.scalar(
                 select(WechatIdentityRecord).where(
                     WechatIdentityRecord.user_id == user_id,
@@ -166,7 +178,8 @@ class PaymentService:
                 cards=product.cards,
                 original_amount=product.price,
                 discount_amount=min(coupon.amount, product.price - 1) if use_coupon else 0,
-                total_amount=product.price - (min(coupon.amount, product.price - 1) if use_coupon else 0),
+                total_amount=product.price
+                - (min(coupon.amount, product.price - 1) if use_coupon else 0),
                 coupon_id=coupon.id if use_coupon else None,
                 app_id=self.auth.app_id or "mock-app-id",
                 mchid=self.settings.mchid or "mock-mch",

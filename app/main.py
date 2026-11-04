@@ -16,9 +16,9 @@ from starlette.concurrency import run_in_threadpool
 from app import __version__
 from app.admin import AdminError, AdminService, AdminSettings
 from app.api.admin import router as admin_router
+from app.api.payments import router as payment_router
 from app.api.redemptions import router as redemption_router
 from app.api.reviews import router as review_router
-from app.api.payments import router as payment_router
 from app.api.routes import router
 from app.config import AnalysisQueueSettings, AuthSettings
 from app.database import Database

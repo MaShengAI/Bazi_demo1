@@ -55,7 +55,9 @@ class OrderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     product_code: Literal["single", "double", "family"]
     use_coupon: bool = True
-    coupon_id: str | None = Field(default=None, min_length=1, max_length=36, pattern=r"^[A-Za-z0-9_-]+$")
+    coupon_id: str | None = Field(
+        default=None, min_length=1, max_length=36, pattern=r"^[A-Za-z0-9_-]+$"
+    )
     idempotency_key: str = Field(min_length=16, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
@@ -67,7 +69,10 @@ def account(service: Service, user: RequiredUserDependency) -> dict:
 @router.post("/orders", status_code=201)
 def create_order(payload: OrderRequest, service: Service, user: RequiredUserDependency) -> dict:
     return service.create(
-        user.id, payload.product_code, payload.use_coupon, payload.idempotency_key,
+        user.id,
+        payload.product_code,
+        payload.use_coupon,
+        payload.idempotency_key,
         coupon_id=payload.coupon_id,
     )
 

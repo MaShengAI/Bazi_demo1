@@ -46,7 +46,12 @@ def test_0007_preserves_existing_used_coupon_and_paid_order(tmp_path, monkeypatc
     command.upgrade(config, "20261101_0007")
     # Read current ORM models only after subsequent additive migrations too.
     with db.session() as s:
-        assert s.execute(text("SELECT redeemed_order_id FROM weekly_coupons WHERE id=:id"), {"id": cid}).scalar_one() == oid
+        assert (
+            s.execute(
+                text("SELECT redeemed_order_id FROM weekly_coupons WHERE id=:id"), {"id": cid}
+            ).scalar_one()
+            == oid
+        )
     command.upgrade(config, "head")
     with db.session() as s:
         c, o = s.get(WeeklyCoupon, cid), s.get(PaymentOrder, oid)

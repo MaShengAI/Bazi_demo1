@@ -59,8 +59,18 @@ def test_annual_branch_stars_reuse_rules_without_mutating_old_snapshots() -> Non
     result = with_annual_branch_stars(snapshot)
     years = result["major_luck_cycles"][0]["annual_years"]
     assert [year["secondary_stars"][0] for year in years] == [
-        "正官", "伤官", "偏印", "正印", "食神", "比肩",
-        "劫财", "伤官", "偏财", "正财", "食神", "七杀",
+        "正官",
+        "伤官",
+        "偏印",
+        "正印",
+        "食神",
+        "比肩",
+        "劫财",
+        "伤官",
+        "偏财",
+        "正财",
+        "食神",
+        "七杀",
     ]
     assert years[2]["secondary_stars"] == ["偏印", "比肩", "食神"]
     assert snapshot == original

@@ -1,11 +1,11 @@
+import uuid
 from dataclasses import replace
 from datetime import datetime, timedelta
-import uuid
 
 import pytest
 from sqlalchemy import event, func, select
+from test_payments import NOW, account, create, payment_app  # noqa: F401 - shared pytest fixture
 
-from test_payments import payment_app, NOW, account, create  # noqa: F401 - shared pytest fixture
 from app.commerce_models import CardLedger, CardWallet, RedemptionCode, WeeklyCoupon
 from app.models import UserRecord
 from app.services.cards import PaymentError

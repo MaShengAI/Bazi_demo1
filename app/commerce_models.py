@@ -37,7 +37,9 @@ class WeeklyCoupon(Base):
     period_start: Mapped[datetime | None] = mapped_column(DateTime)
     # An immutable source key, like reserved_order_id; never reused on another refund.
     source_refund_id: Mapped[str | None] = mapped_column(String(32), unique=True)
-    amount: Mapped[int] = mapped_column(Integer, nullable=False, default=5000, server_default="5000")
+    amount: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=5000, server_default="5000"
+    )
     source_code_id: Mapped[str | None] = mapped_column(String(32), unique=True)
     # Immutable grant key, deliberately not a FK: deleting a report keeps its gift.
     source_review_id: Mapped[str | None] = mapped_column(String(36), unique=True)
@@ -102,7 +104,9 @@ class RedemptionBatch(Base):
 class RedemptionCode(Base):
     __tablename__ = "redemption_codes"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
-    batch_id: Mapped[str] = mapped_column(String(32), ForeignKey("redemption_batches.id"), index=True)
+    batch_id: Mapped[str] = mapped_column(
+        String(32), ForeignKey("redemption_batches.id"), index=True
+    )
     # Random 100-bit secret: plaintext is returned only at generation, never stored/logged.
     code_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     suffix: Mapped[str] = mapped_column(String(4), nullable=False)

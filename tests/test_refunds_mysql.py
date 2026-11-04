@@ -9,8 +9,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
+from mysql_target import require_financial_test_database
 from sqlalchemy import delete, func, select
-from sqlalchemy.engine import make_url
 
 from app.commerce_models import (
     CardLedger,
@@ -74,13 +74,7 @@ def isolated():
     url = os.getenv("BAZI_TEST_MYSQL_URL", "")
     if not url:
         pytest.skip("Requires a restricted MySQL *_test database")
-    parsed = make_url(url)
-    if (
-        parsed.get_backend_name() != "mysql"
-        or parsed.database != "bazi_payment_test"
-        or parsed.username != "bazi_payment_tester"
-    ):
-        pytest.fail("Refund integration tests require the dedicated restricted test database/user")
+    require_financial_test_database(url)
     database, uid = Database(url), str(uuid.uuid4())
     with database.session() as session:
         session.add(UserRecord(id=uid, status="active"))

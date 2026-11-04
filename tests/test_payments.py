@@ -70,18 +70,27 @@ def test_explicit_coupon_controls_price_and_idempotency(payment_app):
     default = account(client)["coupon"]
     with database.session() as session:
         user_id = session.get(WeeklyCoupon, default["id"]).user_id
-        selected = WeeklyCoupon(id=str(uuid.uuid4()), user_id=user_id, amount=8800,
-                                expires_at=NOW + timedelta(days=10))
+        selected = WeeklyCoupon(
+            id=str(uuid.uuid4()), user_id=user_id, amount=8800, expires_at=NOW + timedelta(days=10)
+        )
         selected_id = selected.id
         session.add(selected)
         session.commit()
     assert account(client)["coupon"]["id"] == default["id"]
-    payload = {"product_code": "single", "use_coupon": True,
-               "coupon_id": selected_id, "idempotency_key": uuid.uuid4().hex}
+    payload = {
+        "product_code": "single",
+        "use_coupon": True,
+        "coupon_id": selected_id,
+        "idempotency_key": uuid.uuid4().hex,
+    }
     response = client.post("/api/v1/payments/orders", json=payload)
     assert response.status_code == 201, response.text
     order = response.json()
-    assert (order["coupon_id"], order["discount_amount"], order["total_amount"]) == (selected_id, 8799, 1)
+    assert (order["coupon_id"], order["discount_amount"], order["total_amount"]) == (
+        selected_id,
+        8799,
+        1,
+    )
     assert client.post("/api/v1/payments/orders", json=payload).json()["id"] == order["id"]
     conflict = client.post("/api/v1/payments/orders", json={**payload, "coupon_id": default["id"]})
     assert conflict.status_code == 409
@@ -94,7 +103,9 @@ def test_explicit_coupon_controls_price_and_idempotency(payment_app):
     assert none["total_amount"] == 8800 and none["coupon_id"] is None
 
 
-@pytest.mark.parametrize("invalid", ["foreign", "expired", "reserved", "used", "missing", "expiring"])
+@pytest.mark.parametrize(
+    "invalid", ["foreign", "expired", "reserved", "used", "missing", "expiring"]
+)
 def test_explicit_unavailable_coupon_never_substitutes_weekly(payment_app, invalid):
     client, database, _ = payment_app
     default = account(client)["coupon"]
@@ -106,16 +117,35 @@ def test_explicit_unavailable_coupon_never_substitutes_weekly(payment_app, inval
             session.add(UserRecord(id=user_id, status="active"))
             session.flush()
         if invalid != "missing":
-            session.add(WeeklyCoupon(id=selected_id, user_id=user_id, amount=8800,
-                expires_at=NOW + (timedelta(seconds=90) if invalid == "expiring" else
-                                  timedelta(days=-1 if invalid == "expired" else 7)),
-                reserved_order_id="held" if invalid == "reserved" else None,
-                redeemed_order_id="paid" if invalid == "used" else None))
+            session.add(
+                WeeklyCoupon(
+                    id=selected_id,
+                    user_id=user_id,
+                    amount=8800,
+                    expires_at=NOW
+                    + (
+                        timedelta(seconds=90)
+                        if invalid == "expiring"
+                        else timedelta(days=-1 if invalid == "expired" else 7)
+                    ),
+                    reserved_order_id="held" if invalid == "reserved" else None,
+                    redeemed_order_id="paid" if invalid == "used" else None,
+                )
+            )
         session.commit()
-    result = client.post("/api/v1/payments/orders", json={"product_code": "single",
-        "use_coupon": True, "coupon_id": selected_id, "idempotency_key": uuid.uuid4().hex})
+    result = client.post(
+        "/api/v1/payments/orders",
+        json={
+            "product_code": "single",
+            "use_coupon": True,
+            "coupon_id": selected_id,
+            "idempotency_key": uuid.uuid4().hex,
+        },
+    )
     assert result.status_code == 409, result.text
-    assert result.json()["error"]["code"] == ("coupon_expiring" if invalid == "expiring" else "coupon_unavailable")
+    assert result.json()["error"]["code"] == (
+        "coupon_expiring" if invalid == "expiring" else "coupon_unavailable"
+    )
     with database.session() as session:
         assert session.scalar(select(func.count(PaymentOrder.id))) == 0
         assert session.get(WeeklyCoupon, default["id"]).reserved_order_id is None
@@ -123,11 +153,20 @@ def test_explicit_unavailable_coupon_never_substitutes_weekly(payment_app, inval
 
 def test_coupon_selection_request_validation(payment_app):
     client, _, _ = payment_app
-    payload = {"product_code": "single", "use_coupon": False,
-               "coupon_id": account(client)["coupon"]["id"], "idempotency_key": uuid.uuid4().hex}
+    payload = {
+        "product_code": "single",
+        "use_coupon": False,
+        "coupon_id": account(client)["coupon"]["id"],
+        "idempotency_key": uuid.uuid4().hex,
+    }
     assert client.post("/api/v1/payments/orders", json=payload).status_code == 422
     for bad in ("", "x" * 37, "invalid/identifier"):
-        assert client.post("/api/v1/payments/orders", json={**payload, "use_coupon": True, "coupon_id": bad}).status_code == 422
+        assert (
+            client.post(
+                "/api/v1/payments/orders", json={**payload, "use_coupon": True, "coupon_id": bad}
+            ).status_code
+            == 422
+        )
 
 
 def transaction(order: PaymentOrder):

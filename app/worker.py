@@ -375,9 +375,7 @@ class AnalysisWorker:
             )
             return
 
-    def _prepare_call(
-        self, job_id: str, section_id: str
-    ) -> tuple[str, str] | None:
+    def _prepare_call(self, job_id: str, section_id: str) -> tuple[str, str] | None:
         now = utcnow()
         with self.database.session() as session:
             job = session.get(AnalysisJobRecord, job_id)
@@ -436,7 +434,8 @@ class AnalysisWorker:
                 .with_for_update()
             )
             if (
-                section is None or section.status != "running"
+                section is None
+                or section.status != "running"
                 or section.locked_by != self.worker_id
             ):
                 return None

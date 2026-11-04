@@ -5,8 +5,8 @@ from __future__ import annotations
 import os
 import uuid
 from concurrent.futures import ThreadPoolExecutor
-from threading import Barrier
 from datetime import timedelta
+from threading import Barrier
 
 import pytest
 from sqlalchemy import delete, func, select
@@ -82,17 +82,27 @@ def test_mysql_selected_coupon_race_reserves_exactly_once(mysql_account, same_re
     service = PaymentService(database, PaymentSettings(mode="mock"), AuthSettings(mode="mock"))
     selected_id = str(uuid.uuid4())
     with database.session() as session:
-        session.add(WeeklyCoupon(id=selected_id, user_id=user_id, amount=8800,
-                                expires_at=now_utc() + timedelta(days=10)))
+        session.add(
+            WeeklyCoupon(
+                id=selected_id,
+                user_id=user_id,
+                amount=8800,
+                expires_at=now_utc() + timedelta(days=10),
+            )
+        )
         session.commit()
     shared_key, barrier = uuid.uuid4().hex, Barrier(8)
 
     def attempt(_):
         barrier.wait(timeout=20)
         try:
-            return service.create(user_id, "single", True,
-                                  shared_key if same_request else uuid.uuid4().hex,
-                                  coupon_id=selected_id)
+            return service.create(
+                user_id,
+                "single",
+                True,
+                shared_key if same_request else uuid.uuid4().hex,
+                coupon_id=selected_id,
+            )
         except PaymentError as exc:
             assert exc.code == "order_pending"
             return None
@@ -104,9 +114,18 @@ def test_mysql_selected_coupon_race_reserves_exactly_once(mysql_account, same_re
     assert len({order["id"] for order in orders}) == 1
     assert all(order["coupon_id"] == selected_id and order["total_amount"] == 1 for order in orders)
     with database.session() as session:
-        assert session.scalar(select(func.count(PaymentOrder.id)).where(PaymentOrder.user_id == user_id)) == 1
+        assert (
+            session.scalar(
+                select(func.count(PaymentOrder.id)).where(PaymentOrder.user_id == user_id)
+            )
+            == 1
+        )
         assert session.get(WeeklyCoupon, selected_id).reserved_order_id == orders[0]["id"]
-        other = session.scalars(select(WeeklyCoupon).where(WeeklyCoupon.user_id == user_id, WeeklyCoupon.id != selected_id)).one()
+        other = session.scalars(
+            select(WeeklyCoupon).where(
+                WeeklyCoupon.user_id == user_id, WeeklyCoupon.id != selected_id
+            )
+        ).one()
         assert other.reserved_order_id is None and other.redeemed_order_id is None
 
 

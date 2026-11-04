@@ -226,7 +226,8 @@ class AnalysisJobService:
                 session.add(record)
             if request.birth_calendar:
                 record.request_json = {
-                    **record.request_json, "birth_calendar": request.birth_calendar,
+                    **record.request_json,
+                    "birth_calendar": request.birth_calendar,
                 }
             session.flush()
             job = max(record.jobs, key=lambda job: (job.created_at, job.id), default=None)
@@ -276,22 +277,24 @@ class AnalysisJobService:
             reports = []
             for chart in charts:
                 job = max(chart.jobs, key=lambda job: (job.created_at, job.id), default=None)
-                reports.append({
-                    "chart_id": chart.id,
-                    "job_id": job.id if job else None,
-                    "status": job.status if job else "locked",
-                    "name": chart.request_json.get("name"),
-                    "birth_local_datetime": chart.request_json.get("birth_local_datetime"),
-                    "pillars": [
-                        chart.snapshot_json.get("pillars", {}).get(key, {}).get("pillar", "")
-                        for key in ("year", "month", "day", "hour")
-                    ],
-                    "completed_sections": (
-                        sum(s.status == "completed" for s in job.sections) if job else 0
-                    ),
-                    "total_sections": len(job.sections) if job else 0,
-                    "created_at": chart.created_at,
-                })
+                reports.append(
+                    {
+                        "chart_id": chart.id,
+                        "job_id": job.id if job else None,
+                        "status": job.status if job else "locked",
+                        "name": chart.request_json.get("name"),
+                        "birth_local_datetime": chart.request_json.get("birth_local_datetime"),
+                        "pillars": [
+                            chart.snapshot_json.get("pillars", {}).get(key, {}).get("pillar", "")
+                            for key in ("year", "month", "day", "hour")
+                        ],
+                        "completed_sections": (
+                            sum(s.status == "completed" for s in job.sections) if job else 0
+                        ),
+                        "total_sections": len(job.sections) if job else 0,
+                        "created_at": chart.created_at,
+                    }
+                )
             return reports
 
     def status(self, job_id: str, *, actor_user_id: str | None = None) -> dict[str, object]:

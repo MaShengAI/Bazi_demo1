@@ -58,8 +58,9 @@ def test_nonallowed_account_cannot_create_even_with_direct_request(payment_app):
 
 def test_global_pause_wins_over_allowed_account(payment_app):
     client, _, service = payment_app
-    service.settings = replace(service.settings, allowed_user_ids=(user_id(client),),
-                               accept_new_orders=False)
+    service.settings = replace(
+        service.settings, allowed_user_ids=(user_id(client),), accept_new_orders=False
+    )
     assert account(client)["accept_new_orders"] is False
     assert create(client).status_code == 503
 
@@ -69,8 +70,9 @@ def test_removing_account_does_not_block_existing_order_or_callback(payment_app)
     created = create(client).json()
     with database.session() as session:
         event = transaction(session.get(PaymentOrder, created["id"]))
-    service.settings = replace(service.settings, allowed_user_ids=(str(uuid.uuid4()),),
-                               accept_new_orders=False)
+    service.settings = replace(
+        service.settings, allowed_user_ids=(str(uuid.uuid4()),), accept_new_orders=False
+    )
     assert client.post(f"/api/v1/payments/orders/{created['id']}/prepay").status_code == 200
     service.receive(event)
     service.receive(event)
@@ -90,9 +92,17 @@ def test_existing_unpaid_order_can_close_after_restriction(payment_app):
     assert account(client)["coupon"]["status"] == "available"
 
 
-@pytest.mark.parametrize("raw", ["bad", "*", ",", str(uuid.uuid4()) + ",",
-    "118A376D-C19B-4648-A121-F340A08F4347",
-    "118a376d-c19b-4648-a121-f340a08f4347,118a376d-c19b-4648-a121-f340a08f4347"])
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "bad",
+        "*",
+        ",",
+        str(uuid.uuid4()) + ",",
+        "118A376D-C19B-4648-A121-F340A08F4347",
+        "118a376d-c19b-4648-a121-f340a08f4347,118a376d-c19b-4648-a121-f340a08f4347",
+    ],
+)
 def test_invalid_access_configuration_fails_closed(monkeypatch, raw):
     monkeypatch.setenv("BAZI_PAY_ALLOWED_USER_IDS", raw)
     with pytest.raises(ValueError):

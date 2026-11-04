@@ -96,7 +96,8 @@ def create_chart(
     snapshot = service.calculate(payload)
     saved = (
         get_analysis_job_service(request).save_chart(payload, snapshot, user_id=current_user.id)
-        if current_user else {}
+        if current_user
+        else {}
     )
     return {**with_annual_branch_stars(snapshot), **saved}
 
@@ -128,8 +129,10 @@ def unlock_saved_chart(
         chart_id=chart_id,
     )
     return AnalysisAccepted(
-        job_id=accepted.job_id, chart_id=accepted.chart_id,
-        status=accepted.status, deduplicated=accepted.deduplicated,  # type: ignore[arg-type]
+        job_id=accepted.job_id,
+        chart_id=accepted.chart_id,
+        status=accepted.status,  # type: ignore[arg-type]
+        deduplicated=accepted.deduplicated,
     )
 
 
