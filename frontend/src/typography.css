@@ -1,0 +1,198 @@
+/* Customer typography: shared roles, independent of page and viewport size. */
+.customer-app {
+  --font-text: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-reading: "Noto Serif SC", "Source Han Serif SC", "Songti SC", SimSun, serif;
+  --text-brand: 32px;
+  --text-page: 24px;
+  --text-heading: 20px;
+  --text-body: 16px;
+  --text-meta: 13px;
+  --text-glyph: 26px;
+  --text-amount: 32px;
+  --text-coupon: 48px;
+  --leading-ui: 1.6;
+  --leading-meta: 1.7;
+  --leading-reading: 1.95;
+  --muted: #806d63;
+  font: 400 var(--text-body)/var(--leading-ui) var(--font-text);
+}
+
+.customer-app :is(button, input, select, textarea) { font: inherit; }
+.customer-app :is(p, li) { font: 400 var(--text-body)/var(--leading-ui) var(--font-text); }
+.customer-app :is(h1, h2, h3, h4, h5) {
+  font: 500 var(--text-heading)/1.5 var(--font-reading);
+}
+.customer-app :is(small, .status-badge, .section-number, .preview-topic-number) {
+  font: 400 var(--text-meta)/var(--leading-meta) var(--font-text);
+}
+.customer-app :is(b, strong) { font-weight: 500; }
+
+/* Page names and section names. */
+.customer-app .plum-brand h1 { font: 400 50px/1.25 "Sizhu Engraved Kai", var(--font-reading); font-synthesis: none; opacity: .8; }
+.customer-app .customer-page-title h1,
+.customer-app .profile-hero h1 { font: 500 var(--text-page)/1.4 var(--font-reading); }
+.customer-app .profile-hero h1 { overflow-wrap: anywhere; }
+.customer-app .section-heading-row h2,
+.customer-app .ornament-heading h2,
+.customer-app .report-empty h2,
+.customer-app .report-name-row h2,
+.customer-app .service-card h2,
+.customer-app .customer-privacy h2,
+.customer-app .analysis-section-card h4,
+.customer-app .card-shop h2,
+.customer-app .card-shop h3,
+.customer-app .reading-preview-card h3,
+.customer-app .plum-picker-header h3,
+.customer-app .reading-menu h3,
+.customer-app .confirm-dialog h3,
+.customer-app .session-expired h2 { font: 500 var(--text-heading)/1.5 var(--font-reading); }
+
+/* All ordinary controls use the same font, including text links and form labels. */
+.customer-app .button,
+.customer-app .text-button,
+.customer-app .form-actions .button,
+.customer-app .preview-unlock .button,
+.customer-app .plum-picker-confirm,
+.customer-app .plum-calendar-switch button,
+.customer-app .plum-picker-header > button,
+.customer-app .field > input,
+.customer-app .field > select,
+.customer-app .date-picker-trigger,
+.customer-app .location-picker-trigger,
+.customer-app .report-list-tools input,
+.customer-app .field > span,
+.customer-app .field legend,
+.customer-app .segmented label span,
+.customer-app .account-links > button { font: 400 var(--text-body)/var(--leading-ui) var(--font-text); }
+.customer-app .button-primary,
+.customer-app .form-actions .button,
+.customer-app .plum-picker-confirm { letter-spacing: 2px; }
+.customer-app .gender-field legend { top: 50%; transform: translateY(-50%); }
+
+/* Supporting information never shrinks to 10–12px on narrow screens. */
+.customer-app .brand-caption,
+.customer-app .customer-page-title p,
+.customer-app .section-heading-row p,
+.customer-app .privacy-consent > label,
+.customer-app .privacy-consent details,
+.customer-app .reviews-empty small,
+.customer-app .customer-footnote,
+.customer-app .customer-tabs button,
+.customer-app .report-birth,
+.customer-app .report-summary .status-badge,
+.customer-app .account-footer > span,
+.customer-app .coupon-detail p,
+.customer-app .service-notes p,
+.customer-app .results-title-row p,
+.customer-app .results-title-row .chart-birth-times,
+.customer-app .card-shop-order small,
+.customer-app .card-product-name > span,
+.customer-app .card-product-price small,
+.customer-app .plum-picker-description,
+.customer-app .plum-picker-error,
+.customer-app .plum-calendar-label,
+.customer-app .wheel-label,
+.customer-app .preview-unlock p,
+.customer-app .reading-preview-note,
+.customer-app .timeline-heading p,
+.customer-app .timeline-heading .timeline-heading-meta,
+.customer-app .timeline-age,
+.customer-app .timeline-stars,
+.customer-app .timeline-scroll-controls > span,
+.customer-app .timeline-facts-content p { font: 400 var(--text-meta)/var(--leading-meta) var(--font-text); }
+.customer-app .brand-caption { letter-spacing: .16em; }
+.customer-app .brand-caption::before, .customer-app .brand-caption::after { width: 24px; }
+.customer-app .customer-tabs button { line-height: 1.4; }
+.customer-app .report-birth { display: block; }
+.customer-app .report-birth time { white-space: normal; overflow-wrap: anywhere; }
+.customer-app .card-shop-order small { display: block; }
+.customer-app .card-product-price small { max-width: 140px; }
+.customer-app .account-assets > button { grid-template-rows: 24px auto; }
+.customer-app .account-assets span { font: 400 var(--text-body)/1.5 var(--font-text); }
+.customer-app .account-assets b { font: 400 var(--text-body)/1.5 var(--font-text); font-variant-numeric: tabular-nums; }
+.customer-app .account-assets .skeleton-count { height: 20px; }
+
+/* Reading text keeps one size and a calm, consistent paragraph rhythm. */
+.customer-app .analysis-copy p { font: 400 var(--text-body)/var(--leading-reading) var(--font-reading); }
+.customer-app .reading-preview-card li { font: 400 var(--text-body)/1.65 var(--font-reading); }
+.customer-app .analysis-copy p { margin: 0 0 1.25em; }
+.customer-app .analysis-copy p:last-child { margin-bottom: 0; }
+.customer-app .customer-privacy p,
+.customer-app .confirm-dialog > p { font: 400 var(--text-body)/1.8 var(--font-text); }
+.customer-app .reading-directory a,
+.customer-app .reading-menu nav > button { font: 400 var(--text-body)/var(--leading-ui) var(--font-text); }
+.customer-app .reading-directory a { min-height: 48px; }
+.customer-app .reading-directory a[aria-current="location"],
+.customer-app .reading-menu nav > button[aria-current="location"] { font-weight: 500; }
+.customer-app .reading-directory span,
+.customer-app .reading-menu nav > button > span { font: 400 var(--text-meta)/1.5 var(--font-text); }
+.customer-app .reading-shortcuts button { font: 400 var(--text-meta)/1.4 var(--font-text); }
+.customer-app .reading-shortcuts button > span { font: 400 var(--text-body)/1.4 var(--font-text); }
+.customer-app .wheel-option { font: 400 var(--text-body)/44px var(--font-text); }
+.customer-app .wheel-option.is-selected { font-weight: 500; }
+.customer-app .plum-calendar-label { line-height: 30px; }
+.customer-app .wheel-label { line-height: 26px; }
+.customer-app .plum-date-wheels { grid-template-columns: 1.15fr 1.25fr 1fr .8fr .8fr; }
+
+/* Dense chart facts have a single scale; highlighted values are explicit exceptions. */
+.customer-app .pillar-matrix,
+.customer-app .results-title-row h2,
+.customer-app .results-title-row .chart-birth-times { font: 400 var(--text-meta)/1.5 var(--font-text); }
+.customer-app .pillar-matrix th { color: #806d63; font-weight: 400; }
+.customer-app .matrix-symbol-large { font: 500 var(--text-glyph)/1.25 var(--font-text); }
+.customer-app .summary-pillars b { font: 500 var(--text-meta)/1 var(--font-text); }
+.customer-app .luck-timeline { --timeline-glyph-size: var(--text-heading); --timeline-star-size: var(--text-meta); }
+.customer-app .timeline-column { font: 400 var(--text-body)/var(--leading-ui) var(--font-text); }
+.customer-app .timeline-column[aria-pressed="true"] { font-weight: 500; }
+.customer-app .timeline-year { font: inherit; }
+.customer-app .timeline-pillar b,
+.customer-app .timeline-band h4 { font: 500 var(--timeline-glyph-size)/1.25 var(--font-reading); }
+.customer-app .timeline-pillar small { font: 400 var(--timeline-star-size)/1.4 var(--font-reading); }
+.customer-app .timeline-calendar-icon text { font: 500 var(--text-heading) var(--font-reading); }
+.customer-app .timeline-facts-content h5,
+.customer-app .timeline-facts-content p,
+.customer-app .timeline-facts-content .timeline-stars { font: 400 var(--text-meta)/1.5 var(--font-text); }
+.customer-app .card-shop-products .card-product-price b { font: 500 var(--text-amount)/1.25 var(--font-text); font-variant-numeric: tabular-nums; }
+.customer-app .service-qq { font: 500 var(--text-page)/1.4 var(--font-text); }
+.customer-app .coupon-amount { font: 400 var(--text-page)/1.4 var(--font-text); }
+.customer-app .coupon-amount b { font: 500 var(--text-coupon)/1.3 var(--font-text); }
+
+/* Decorative marks and notifications stay separate from content typography. */
+.customer-app .profile-avatar,
+.customer-app .empty-scroll,
+.customer-app .review-flower { font: 400 var(--text-brand)/1 var(--font-reading); }
+.customer-app .title-flower,
+.customer-app .account-links i,
+.customer-app .plum-picker-header > span,
+.customer-app .reading-menu header > button,
+.customer-app .timeline-scroll-controls > button { font: 400 var(--text-page)/1 var(--font-text); }
+.customer-app .confirm-symbol { font: 500 var(--text-page)/1 var(--font-text); }
+.customer-app .notice,
+.customer-app .section-empty,
+.customer-app .section-error,
+.customer-app .inline-error,
+.customer-app .global-message,
+.customer-app .network-banner,
+.customer-app .update-banner,
+.customer-app .wheel-loading,
+.customer-app .timeline-empty,
+.customer-app .disclaimer,
+.customer-app .disclaimer p { font: 400 var(--text-meta)/var(--leading-meta) var(--font-text); }
+.customer-app .global-message p,
+.customer-app .network-banner p,
+.customer-app .card-shop-note { font: inherit; }
+
+/* Keep secondary labels legible against the paper and plum backdrop. */
+.customer-app :is(.customer-page-title p, .customer-footnote, .account-footer > span,
+  .report-empty p, .reviews-empty small, .section-number, .preview-topic-number,
+  .card-product-name > span, .coupon-detail p, .wheel-label,
+  .plum-picker-description, .timeline-heading-meta, .timeline-scroll-controls) { color: var(--muted); }
+
+/* Reflow long package names on small phones instead of shrinking their type. */
+@media (max-width: 360px) {
+  .customer-app .card-product-heading { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .customer-app .card-product-price { justify-self: start; text-align: left; }
+  .customer-app .card-product-price small { max-width: none; justify-content: flex-start; }
+}
+
+.customer-app .results-title-row .chart-birth-times { line-height: 1.5; }

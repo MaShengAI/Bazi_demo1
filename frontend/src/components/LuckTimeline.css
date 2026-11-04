@@ -1,0 +1,24 @@
+.luck-timeline { --timeline-glyph-size: 21px; --timeline-star-size: 14px; margin: 18px 0; border: 1px solid #e5d4c6; border-radius: 14px; background: #fffdf8; overflow: hidden; color: #473b33; }
+.timeline-heading { display: flex; align-items: center; gap: 12px; justify-content: space-between; padding: 10px 13px; background: #f5eee6; }
+.timeline-heading > div { min-width: 0; }.customer-app .timeline-heading p { margin: 2px 0; overflow-wrap: anywhere; }.timeline-heading p > span { color: #8d6b55; }
+.customer-app .timeline-heading .timeline-heading-meta { color: #a18b79; }
+.timeline-today { display: grid; place-items: center; flex-shrink: 0; width: 37px; height: 40px; padding: 5px; border: 1px solid #e8dfd3; border-radius: 7px; color: #ad8e54; background: #fffdfa; box-shadow: 0 1px 3px #6b4b2b0a; }
+.timeline-calendar-icon { display: block; width: 25px; height: 29px; }
+.timeline-calendar-icon text { }
+.timeline-band { display: flex; min-width: 0; border-top: 1px solid #e7d8cb; }.timeline-band + .timeline-band { border-top: 6px solid #f3ece5; }
+.timeline-band h4 { flex: 0 0 39px; margin: 0; padding: 14px 9px; writing-mode: vertical-rl; letter-spacing: 8px; text-align: center; background: #fffaf4; }
+.timeline-band-content { min-width: 0; flex: 1; }
+.timeline-strip { position: relative; display: flex; align-items: stretch; overflow-x: auto; overscroll-behavior-x: contain; scroll-snap-type: x proximity; scrollbar-width: thin; scrollbar-color: #c6ad91 #f5eee7; -webkit-overflow-scrolling: touch; }
+.customer-app .timeline-column { flex: 0 0 69px; min-width: 0; padding: 6px 3px 7px; border: 0; border-right: 1px solid #eee3d9; border-radius: 0; background: #fffdf8; color: #46372d; text-align: center; scroll-snap-align: start; }
+.customer-app .timeline-column[aria-pressed="true"] { background: #e9ddcf; box-shadow: inset 0 3px 0 #a56e48; }
+.timeline-year { display: block; position: relative; line-height: 1.6; white-space: nowrap; }.timeline-age { display: block; line-height: 1.7; color: #8f7b69; }
+.timeline-pillar { display: flex; flex-direction: column; gap: 1px; margin-top: 3px; }.timeline-pillar > span { display: flex; align-items: baseline; justify-content: center; gap: 3px; min-height: 28px; }.timeline-pillar b { }.timeline-pillar small { color: #b63830; }.timeline-column[aria-pressed="true"] .timeline-pillar b { }
+.timeline-current-dot { display: inline-block; width: 4px; height: 4px; margin: 0 0 2px 3px; border-radius: 50%; background: #b74c38; }
+.timeline-scroll-controls { display: flex; align-items: center; justify-content: space-between; background: #faf5ef; color: #b49c85; }
+.timeline-scroll-controls > button { border: 0; width: 34px; min-height: 30px; padding: 0; background: transparent; color: #ad957a; }.timeline-scroll-controls > span { }
+.timeline-facts { border-top: 1px dashed #e5d4c6; }.timeline-facts-content { padding: 10px 14px 12px; }.timeline-facts-content h5 { margin: 5px 0; }.timeline-facts-content p { margin: 4px 0; color: var(--chart-text, #493b34); }
+.timeline-detail-title { display: flex; flex-wrap: wrap; column-gap: 5px; }.timeline-detail-title > span { white-space: nowrap; }
+.timeline-stars { display: flex; flex-wrap: wrap; gap: 1px 8px; margin-top: 4px; color: var(--chart-text, #493b34); }.timeline-annual-details { margin-top: 8px; padding-top: 5px; border-top: 1px solid #ede1d6; }.timeline-empty { padding: 18px; color: #9c8875; }
+@media (min-width: 600px) { .customer-app .timeline-column { flex-basis: 77px; }.customer-app .timeline-heading p { } }
+@media (max-width: 420px) { .luck-timeline { --timeline-star-size: 13px; } }
+@media (max-width: 360px) { .luck-timeline { --timeline-glyph-size: 19px; --timeline-star-size: 12px; }.timeline-band h4 { flex-basis: 34px; padding-inline: 6px; }.customer-app .timeline-column { flex-basis: 64px; }.timeline-heading { padding: 10px; }.customer-app .timeline-heading p { }.timeline-today { width: 32px; height: 36px; } }

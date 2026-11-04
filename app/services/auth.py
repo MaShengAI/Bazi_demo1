@@ -19,6 +19,7 @@ from app.models import (
     UserRecord,
     WechatIdentityRecord,
 )
+from app.services.cards import ensure_account, lock_user
 
 
 class AuthError(RuntimeError):
@@ -60,9 +61,12 @@ def safe_return_to(value: str | None) -> str:
 
 
 class AuthService:
-    def __init__(self, database: Database, settings: AuthSettings):
+    def __init__(
+        self, database: Database, settings: AuthSettings, *, commerce_enabled: bool = False
+    ):
         self.database = database
         self.settings = settings
+        self.commerce_enabled = commerce_enabled
 
     def create_oauth_state(self, return_to: str | None) -> str:
         if not self.settings.enabled:
@@ -158,6 +162,9 @@ class AuthService:
                 user.last_login_at = now
             if user.status != "active":
                 raise AuthError(403, "user_disabled", "当前账号已停用")
+            if self.commerce_enabled:
+                lock_user(session, user.id)
+                ensure_account(session, user.id, now)
             raw_token = secrets.token_urlsafe(48)
             session.add(
                 AuthSessionRecord(

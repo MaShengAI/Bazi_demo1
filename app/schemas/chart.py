@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -22,6 +23,8 @@ class ChartRequest(BaseModel):
     gender: Gender
     birth_local_datetime: str
     location_id: int = Field(gt=0)
+    # Presentation preference only; all calculations still use the local solar date.
+    birth_calendar: Literal["solar", "lunar"] | None = Field(default=None, exclude=True)
 
     @field_validator("birth_local_datetime")
     @classmethod

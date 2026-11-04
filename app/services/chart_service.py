@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from typing import Any
+
 from app import __version__
 from app.domain.bazi.calculator import calculate_four_pillars
 from app.domain.calendar.solar_terms import SolarTermRepository
@@ -9,11 +11,36 @@ from app.domain.luck.calculator import (
     determine_direction,
 )
 from app.domain.rules.constants import RULESET_VERSION
+from app.domain.rules.core import hidden_stem_details
 from app.domain.rules.shensha import SHENSHA_RULESET_VERSION
 from app.domain.solar_time.service import calculate_true_solar_time
 from app.domain.timezone.service import normalize_local_time
 from app.repositories.locations import LocationRepository
 from app.schemas.chart import ChartRequest
+
+
+def with_annual_branch_stars(chart: dict[str, Any]) -> dict[str, Any]:
+    """Enrich API display data without changing stored snapshots or report identity."""
+    day_stem = chart["pillars"]["day"]["heavenly_stem"]
+    return {
+        **chart,
+        "major_luck_cycles": [
+            {
+                **cycle,
+                "annual_years": [
+                    {
+                        **year,
+                        "secondary_stars": [
+                            item["secondary_star"]
+                            for item in hidden_stem_details(year["pillar"][1], day_stem)
+                        ],
+                    }
+                    for year in cycle["annual_years"]
+                ],
+            }
+            for cycle in chart["major_luck_cycles"]
+        ],
+    }
 
 
 class ChartServiceError(RuntimeError):
@@ -98,7 +125,10 @@ class ChartService:
             }
         )
         return {
-            "request": request.model_dump(mode="json"),
+            "request": {
+                **request.model_dump(mode="json"),
+                **({"birth_calendar": request.birth_calendar} if request.birth_calendar else {}),
+            },
             "location": location.to_dict(),
             "time_normalization": {**normalized.to_dict(), **solar.to_dict()},
             "pillars": pillar_payload,

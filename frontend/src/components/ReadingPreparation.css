@@ -1,0 +1,52 @@
+.customer-app .reading-preparation {
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  margin: 0 -8px 24px;
+  padding: 28px 20px 22px;
+  border: 1px solid #e5c7b9;
+  border-radius: 24px;
+  background: radial-gradient(ellipse at 50% 42%, #ffe6d5a8, transparent 65%), #fffbf5f5;
+  text-align: center;
+  animation: preparation-enter .45s ease-out both;
+}
+.reading-preparation::before,
+.reading-preparation::after { content: ""; position: absolute; z-index: -1; width: 160px; height: 160px; border: 1px solid #dfbda44a; border-radius: 50%; pointer-events: none; }
+.reading-preparation::before { top: -105px; left: -80px; box-shadow: 0 0 0 10px #f3dfd22b; }
+.reading-preparation::after { right: -100px; bottom: -115px; box-shadow: 0 0 0 14px #f3dfd22b; }
+.customer-app .preparation-heading p { margin: 0; color: #80695d; font: 400 var(--text-body)/var(--leading-ui) var(--font-text); }
+.reading-compass { position: relative; width: min(100%, 310px); margin: 22px auto 25px; padding-bottom: 18px; }
+.reading-compass svg { display: block; width: 100%; overflow: visible; filter: drop-shadow(0 9px 9px #9e4c3320); }
+.compass-ring { transform-origin: 170px 170px; animation: compass-clockwise linear infinite; }
+.compass-branches { animation-duration: 58s; }
+.compass-stems { animation-duration: 42s; animation-direction: reverse; }
+.compass-pillars { animation-duration: 28s; }
+.compass-taiji { animation-duration: 12s; animation-direction: reverse; }
+.reading-compass text { font-family: var(--font-reading); font-size: 19px; font-weight: 400; fill: #fff6e6; }
+.reading-compass line { stroke: #f5dbb2; stroke-opacity: .62; stroke-width: 1; }
+.reading-compass .compass-gold-labels text { fill: #785339; font-size: 19px; }
+.reading-compass .compass-gold-labels line { stroke: #bc8464; stroke-opacity: .5; }
+.reading-compass .compass-inner-labels text { font-size: 16px; fill: #fff8ec; }
+.reading-compass .compass-inner-labels line { stroke: #ffe3bc; stroke-opacity: .7; }
+.compass-rim { fill: none; stroke: #f0b38e; stroke-width: 1; stroke-opacity: .65; }
+.compass-ground-shadow { position: absolute; bottom: 0; left: 25%; width: 50%; height: 12px; border-radius: 50%; background: #c6856b2b; filter: blur(6px); }
+.preparation-progress { width: min(100%, 340px); margin-inline: auto; }
+.preparation-progress-caption { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 9px; color: #835b47; font: 400 var(--text-body)/var(--leading-ui) var(--font-text); }
+.preparation-progress-caption output { color: #a24436; font-size: var(--text-body); font-variant-numeric: tabular-nums; }
+.preparation-progress-track { position: relative; height: 9px; overflow: hidden; border: 1px solid #e7cdbf; border-radius: 99px; background: #f0e3da; }
+.preparation-progress-fill { position: relative; display: block; height: 100%; overflow: hidden; border-radius: inherit; background: linear-gradient(90deg, #b6473e, #d38b6a); transition: width 1.25s ease-in-out; }
+.preparation-progress-track::after { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, transparent, #fff2d27a, transparent); transform: translateX(-100%); animation: preparation-flow 2.6s ease-in-out infinite; pointer-events: none; }
+.customer-app .preparation-preview-toggle { margin-top: 14px; min-height: 44px; }
+.reading-preparation ~ .analysis-grid { animation: preparation-enter .35s ease-out; }
+.analysis-panel[data-active="false"] .compass-ring, .analysis-panel[data-active="false"] .preparation-progress-track::after { animation-play-state: paused; }
+@keyframes compass-clockwise { to { transform: rotate(360deg); } }
+@keyframes preparation-flow { to { transform: translateX(100%); } }
+@keyframes preparation-enter { from { opacity: 0; } to { opacity: 1; } }
+@media (max-width: 359px) {
+  .customer-app .reading-preparation { padding-inline: 14px; }
+  .reading-compass { width: min(100%, 260px); margin-block: 18px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reading-compass .compass-ring, .preparation-progress-track::after, .customer-app .reading-preparation { animation: none; }
+  .preparation-progress-fill { transition: none; }
+}

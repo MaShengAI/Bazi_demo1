@@ -1,0 +1,10 @@
+# Add after the existing base/Baota/payment files. Only the API gets admin credentials.
+services:
+  api:
+    environment:
+      BAZI_ADMIN_ENABLED: ${BAZI_ADMIN_ENABLED:-false}
+      BAZI_ADMIN_USERNAME: ${BAZI_ADMIN_USERNAME:-}
+      BAZI_ADMIN_PASSWORD_HASH: ${BAZI_ADMIN_PASSWORD_HASH:-}
+      BAZI_ADMIN_DATABASE_URL: ${BAZI_ADMIN_DATABASE_URL:-}
+      BAZI_ADMIN_PUBLIC_ORIGIN: ${BAZI_ADMIN_PUBLIC_ORIGIN:-}
+      BAZI_ADMIN_COOKIE_SECURE: "true"

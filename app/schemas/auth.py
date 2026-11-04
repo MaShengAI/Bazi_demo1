@@ -12,6 +12,8 @@ class AuthUserResponse(BaseModel):
 
 
 class AuthStateResponse(BaseModel):
+    payments_enabled: bool = False
+    payment_mode: str = "disabled"
     enabled: bool
     authenticated: bool
     require_for_analysis: bool
@@ -20,7 +22,22 @@ class AuthStateResponse(BaseModel):
 
 
 class AnalysisHistoryItem(BaseModel):
+    pillars: list[str] = Field(default_factory=list)
     job_id: str
+    chart_id: str
+    status: str
+    name: str | None = None
+    birth_local_datetime: str | None = None
+    completed_sections: int = Field(ge=0)
+    total_sections: int = Field(ge=0)
+    created_at: datetime
+
+
+class ReportHistoryItem(BaseModel):
+    """Account archive includes free charts without an analysis job."""
+
+    pillars: list[str] = Field(default_factory=list)
+    job_id: str | None = None
     chart_id: str
     status: str
     name: str | None = None

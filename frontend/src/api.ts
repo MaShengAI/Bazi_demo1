@@ -3,12 +3,18 @@ import type {
   AnalysisResult,
   AnalysisStatus,
   AnalysisHistoryItem,
+  SavedReportItem,
+  SavedChartResponse,
   AuthState,
   ApiErrorBody,
   ChartRequest,
   ChartResult,
   City,
   Province,
+  CardAccount,
+  RedemptionReceipt,
+  PaymentOrder,
+  PrepayResponse,
 } from "./types";
 import { APP_VERSION, NETWORK_TIMEOUTS } from "./config";
 
@@ -22,6 +28,9 @@ export class ApiError extends Error {
     this.name = "ApiError";
   }
 }
+
+export const SESSION_EXPIRED_EVENT = "bazi:session-expired";
+export const isSessionExpired = (reason: unknown): reason is ApiError => reason instanceof ApiError && reason.status === 401;
 
 async function request<T>(path: string, init?: RequestInit, timeoutMs: number = NETWORK_TIMEOUTS.read): Promise<T> {
   if (typeof navigator !== "undefined" && !navigator.onLine) {
@@ -51,6 +60,7 @@ async function request<T>(path: string, init?: RequestInit, timeoutMs: number = 
   }
 
   if (!response.ok) {
+    if (response.status === 401) window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
     let payload: ApiErrorBody = {};
     try {
       payload = (await response.json()) as ApiErrorBody;
@@ -80,7 +90,7 @@ function friendlyError(code: string | undefined, message: string | undefined, st
     analysis_not_found: "未找到该分析任务，它可能已被删除。",
     analysis_not_retryable: "该板块当前不能重试。",
     section_not_retryable: "该板块当前不能重试。",
-    authentication_required: "请先使用微信登录，再生成 AI 分析。",
+    authentication_required: "请先使用微信登录后继续操作。",
     daily_analysis_limit_reached: "最近 24 小时的 AI 分析次数已用完，请稍后再试。",
     wechat_auth_disabled: "微信登录尚未启用。",
     wechat_auth_not_configured: "微信登录配置尚未完成。",
@@ -92,9 +102,22 @@ function friendlyError(code: string | undefined, message: string | undefined, st
 }
 
 export const api = {
+  redeemCode: (code: string) => request<RedemptionReceipt>("/api/v1/redemptions", { method: "POST", body: JSON.stringify({ code }) }),
+  cardAccount: () => request<CardAccount>("/api/v1/payments/account"),
+  createOrder: (product_code: string, use_coupon: boolean, idempotency_key: string, coupon_id?: string) =>
+    request<PaymentOrder>("/api/v1/payments/orders", {
+      method: "POST", body: JSON.stringify({ product_code, use_coupon, idempotency_key, coupon_id }),
+    }),
+  prepay: (id: string) => request<PrepayResponse>(`/api/v1/payments/orders/${encodeURIComponent(id)}/prepay`, { method: "POST" }),
+  refreshOrder: (id: string) => request<PaymentOrder>(`/api/v1/payments/orders/${encodeURIComponent(id)}/refresh`, { method: "POST" }),
+  closeOrder: (id: string) => request<PaymentOrder>(`/api/v1/payments/orders/${encodeURIComponent(id)}/close`, { method: "POST" }),
+  mockConfirmOrder: (id: string) => request<PaymentOrder>(`/api/v1/payments/orders/${encodeURIComponent(id)}/mock-confirm`, { method: "POST" }),
   authState: () => request<AuthState>("/api/v1/auth/me"),
   logout: () => request<void>("/api/v1/auth/logout", { method: "POST" }),
   myAnalyses: () => request<AnalysisHistoryItem[]>("/api/v1/me/analyses"),
+  myReports: () => request<SavedReportItem[]>("/api/v1/me/reports"),
+  savedChart: (id: string) => request<SavedChartResponse>(`/api/v1/charts/${encodeURIComponent(id)}`),
+  unlockChart: (id: string) => request<AnalysisAccepted>(`/api/v1/charts/${encodeURIComponent(id)}/analyses`, { method: "POST" }, NETWORK_TIMEOUTS.write),
   provinces: () => request<Province[]>("/api/v1/locations/provinces"),
   cities: (province: string) =>
     request<City[]>(`/api/v1/locations/cities?province=${encodeURIComponent(province)}`),
@@ -114,12 +137,6 @@ export const api = {
       `/api/v1/analyses/${encodeURIComponent(jobId)}/sections/${encodeURIComponent(code)}/retry`,
       { method: "POST" },
     ),
-  cancelAnalysis: (jobId: string) =>
-    request<AnalysisStatus>(`/api/v1/analyses/${encodeURIComponent(jobId)}/cancel`, {
-      method: "POST",
-    }),
-  deleteAnalysis: (jobId: string) =>
-    request<void>(`/api/v1/analyses/${encodeURIComponent(jobId)}`, { method: "DELETE" }),
   deleteChart: (chartId: string) =>
     request<void>(`/api/v1/charts/${encodeURIComponent(chartId)}`, { method: "DELETE" }),
 };

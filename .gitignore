@@ -16,6 +16,8 @@ build/
 !*.example
 deploy/.env.preprod
 deploy/certs/*.pem
+deploy/pay-secrets/*
+!deploy/pay-secrets/.gitkeep
 deploy/backups/*.sql*
 *.sqlite3
 frontend/node_modules/
@@ -23,3 +25,5 @@ frontend/.vite/
 .pnpm-store/
 frontend/test-results/
 frontend/playwright-report/
+
+/node_modules/

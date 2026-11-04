@@ -4,7 +4,10 @@ import { cleanup } from "@testing-library/react";
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
+  window.history.replaceState(null, "", "/");
   vi.restoreAllMocks();
+  vi.spyOn(window, "scrollTo").mockImplementation(() => {});
 });
 
 afterEach(() => {

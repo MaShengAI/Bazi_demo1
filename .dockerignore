@@ -12,6 +12,7 @@ frontend/test-results
 frontend/playwright-report
 deploy/.env.preprod
 deploy/certs/*
+deploy/pay-secrets/*
 !deploy/certs/.gitkeep
 deploy/backups/*
 !deploy/backups/.gitkeep

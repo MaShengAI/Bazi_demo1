@@ -1,26 +1,68 @@
+import { ReportPlaceholder } from "./components/ReportPlaceholder";
+import { CustomerNavigation, CustomerNavigationContext } from "./customerNavigation";
+import { ReviewPage } from "./components/ReviewPages";
+import { RedeemPage } from "./components/RedeemPage";
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError } from "./api";
+import { api, ApiError, isSessionExpired, SESSION_EXPIRED_EVENT } from "./api";
+import { AccountPlaceholder } from "./components/AccountPlaceholder";
 import { AnalysisPanel } from "./components/AnalysisPanel";
-import { AccountPanel } from "./components/AccountPanel";
+import { BottomTabs, CouponPage, MyAccount, PageTitle, PrivacyPage, readCustomerRoute, ReportBack, ReportList, Reviews, ServicePage, type CustomerRoute } from "./components/CustomerPages";
 import { BirthForm } from "./components/BirthForm";
+import { CardShop } from "./components/CardShop";
 import { ChartResultView } from "./components/ChartResultView";
+import { ReadingPreview } from "./components/ReadingPreview";
 import { ConfirmDialog, type ConfirmDialogState } from "./components/ConfirmDialog";
 import { useMobileViewport } from "./hooks/useMobileViewport";
 import { useVersionCheck } from "./hooks/useVersionCheck";
+import { beginWechatLogin, completeWechatLogin, pauseAutoLogin, shouldAutoLogin } from "./wechatLogin";
 import type {
   AnalysisAccepted,
-  AnalysisHistoryItem,
+  SavedReportItem,
   AnalysisResult,
   AnalysisStatus,
   AuthState,
   ChartRequest,
   ChartResult,
+  CardAccount,
 } from "./types";
-import { getWeChatIntegrationState } from "./wechat";
 import { ACTIVE_JOB_STATUSES, nextPollingDelay } from "./polling";
+import "./customer.css";
+import "./typography.css";
 
 const STORAGE_KEY = "bazi.analysis.task.v1";
 const PENDING_ANALYSIS_KEY = "bazi.analysis.pending-login.v1";
+const PENDING_CHART_KEY = "bazi.chart.pending-login.v1";
+const DRAFT_KEY = "bazi.birth.session-draft.v1";
+
+function preventContentInteraction(event: React.SyntheticEvent) {
+  if (event.target instanceof Element && event.target.closest('input, textarea, [contenteditable="true"], [contenteditable=""]')) return;
+  event.preventDefault();
+}
+
+function saveDraft(payload: ChartRequest | null, chartId?: string | null) {
+  try {
+    if (payload) sessionStorage.setItem(DRAFT_KEY, JSON.stringify({ payload, chartId, at: Date.now() }));
+    else sessionStorage.removeItem(DRAFT_KEY);
+  } catch { /* Form and payment remain usable without browser storage. */ }
+}
+
+function readDraft(): ChartRequest | null {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null");
+    const draft = value?.payload;
+    if (Date.now() - value?.at < 60 * 60 * 1000 && ["male", "female"].includes(draft?.gender)
+      && typeof draft.birth_local_datetime === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(draft.birth_local_datetime)
+      && Number.isInteger(draft.location_id)) return draft as ChartRequest;
+  } catch { /* Invalid/expired drafts are never submitted automatically. */ }
+  return null;
+}
+
+function readDraftChartId(): string | null {
+  try {
+    const id = JSON.parse(sessionStorage.getItem(DRAFT_KEY) || "null")?.chartId;
+    return readDraft() && typeof id === "string" && /^[\w-]{1,100}$/.test(id) ? id : null;
+  } catch { return null; }
+}
 
 function clearSavedTask() {
   try {
@@ -74,6 +116,19 @@ function takePendingAnalysis(): ChartRequest | null {
   }
 }
 
+function savePendingChart(payload: ChartRequest) {
+  try { sessionStorage.setItem(PENDING_CHART_KEY, JSON.stringify(payload)); }
+  catch { /* A blocked session store cannot start an unintended paid analysis. */ }
+}
+
+function takePendingChart(): ChartRequest | null {
+  try {
+    const raw = sessionStorage.getItem(PENDING_CHART_KEY);
+    sessionStorage.removeItem(PENDING_CHART_KEY);
+    return raw ? JSON.parse(raw) as ChartRequest : null;
+  } catch { return null; }
+}
+
 function acceptedStatus(accepted: AnalysisAccepted): AnalysisStatus {
   return {
     job_id: accepted.job_id,
@@ -93,44 +148,162 @@ function acceptedStatus(accepted: AnalysisAccepted): AnalysisStatus {
 }
 
 export function App() {
+  const [route, setRoute] = useState(readCustomerRoute);
+  const [navigation] = useState(() => new CustomerNavigation());
   const [saved] = useState(readSavedTask);
   const [chart, setChart] = useState<ChartResult | null>(null);
-  const [jobId, setJobId] = useState(saved?.jobId || "");
-  const [chartId, setChartId] = useState(saved?.chartId || "");
+  const [freeChartId, setFreeChartId] = useState<string | null>(readDraftChartId);
+  const [chartLoading, setChartLoading] = useState(false);
+  const [chartLoadFinishedFor, setChartLoadFinishedFor] = useState("");
+  const [jobId, setJobId] = useState(route.reportId || (route.page !== "chart" ? saved?.jobId : "") || "");
+  const [chartId, setChartId] = useState(route.page !== "chart" ? saved?.chartId || "" : "");
   const [analysisStatus, setAnalysisStatus] = useState<AnalysisStatus | null>(null);
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null);
   const [busy, setBusy] = useState<"chart" | "analysis" | null>(null);
-  const [actionBusy, setActionBusy] = useState<string | null>(null);
+  const [deletingChartId, setDeletingChartId] = useState<string | null>(null);
+  const deletionLock = useRef(false);
   const [pollRevision, setPollRevision] = useState(0);
   const [error, setError] = useState("");
-  const [message, setMessage] = useState(saved ? "正在恢复上次的分析任务…" : "");
+  const [message, setMessage] = useState("");
   const [networkState, setNetworkState] = useState<"online" | "offline" | "weak">(
     navigator.onLine ? "online" : "offline",
   );
   const [networkMessage, setNetworkMessage] = useState("");
   const [confirmDialog, setConfirmDialog] = useState<ConfirmDialogState | null>(null);
   const [authState, setAuthState] = useState<AuthState | null>(null);
-  const [accountOpen, setAccountOpen] = useState(false);
+  const [authUnavailable, setAuthUnavailable] = useState(false);
+  const [sessionExpired, setSessionExpired] = useState(false);
+  const expiredSession = useRef(false);
+  const authEpoch = useRef(0);
+  const [cardRevision, setCardRevision] = useState(0);
   const [accountBusy, setAccountBusy] = useState(false);
-  const [history, setHistory] = useState<AnalysisHistoryItem[]>([]);
+  const [historyError, setHistoryError] = useState("");
+  const [account, setAccount] = useState<CardAccount | null>(null);
+  const [accountError, setAccountError] = useState("");
+  const [cardsBusy, setCardsBusy] = useState(false);
+  const [pendingPayload, setPendingPayload] = useState<ChartRequest | null>(readDraft);
+  const submittedReadingJob = useRef<string | null>(null);
+  const accountRequest = useRef(0);
+  const historyRequest = useRef(0);
+  const [history, setHistory] = useState<SavedReportItem[]>([]);
+  const [historyLoaded, setHistoryLoaded] = useState(false);
   const submissionLock = useRef(false);
   const version = useVersionCheck();
   useMobileViewport();
-  const weChatState = getWeChatIntegrationState();
+
+  function navigate(page: CustomerRoute, reportId?: string, replace = false) {
+    navigation.go(`#/${page}${reportId ? `/${encodeURIComponent(reportId)}` : ""}`, replace);
+  }
+  function goBack(page: CustomerRoute, reportId?: string) {
+    navigation.back(`#/${page}${reportId ? `/${encodeURIComponent(reportId)}` : ""}`);
+  }
+
+  useEffect(() => {
+    const expire = () => {
+      if (expiredSession.current) return;
+      expiredSession.current = true; authEpoch.current += 1;
+      historyRequest.current += 1; accountRequest.current += 1;
+      setSessionExpired(true);
+      setAuthState(current => current ? { ...current, authenticated: false, user: null } : current);
+      setHistory([]); setHistoryLoaded(false); setHistoryError(""); setAccount(null); setAccountError("");
+      setCardsBusy(false); setAccountBusy(false);
+      setJobId(""); setChartId(""); setAnalysisStatus(null); setAnalysisResult(null);
+      setChart(null); setFreeChartId(null); setChartLoading(false);
+      setConfirmDialog(null); setError(""); setMessage("");
+      setNetworkState("online"); setNetworkMessage("");
+      // Keep the saved report pointer and birth draft for explicit recovery after login.
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, expire);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, expire);
+  }, []);
+
+  useEffect(() => navigation.mount(() => setRoute(readCustomerRoute())), [navigation]);
+
+  useEffect(() => {
+    if (route.reportId && route.reportId !== jobId) {
+      setAnalysisResult(null); setAnalysisStatus(null); setJobId(route.reportId);
+      setError("");
+    }
+  }, [route.reportId]);
+
+  useEffect(() => {
+    if (route.page !== "chart" || !route.chartId || !authState?.authenticated) return;
+    let active = true;
+    const epoch = authEpoch.current;
+    setChartLoading(true);
+    api.savedChart(route.chartId).then(savedChart => {
+      if (!active || epoch !== authEpoch.current || expiredSession.current) return;
+      if (savedChart.job_id) { navigate("report", savedChart.job_id, true); return; }
+      setChart(savedChart.chart); setFreeChartId(savedChart.chart_id);
+      setPendingPayload(savedChart.request); saveDraft(savedChart.request, savedChart.chart_id);
+    }).catch(reason => {
+      if (active && epoch === authEpoch.current && !isSessionExpired(reason)) setError((reason as Error).message);
+    }).finally(() => { if (active) { setChartLoading(false); setChartLoadFinishedFor(route.chartId!); } });
+    return () => { active = false; };
+  }, [route.page, route.chartId, authState?.user?.id]);
+
+  // A newly unlocked report opens at its preparation/content area. Reopening
+  // an existing report starts at the birth facts, with all content below it.
+  useEffect(() => {
+    if (route.page !== "report" || submittedReadingJob.current !== route.reportId
+      || analysisResult?.job_id !== route.reportId) return;
+    const frame = window.requestAnimationFrame(() => {
+      document.getElementById("analysis")?.scrollIntoView?.({ block: "start", behavior: "instant" });
+      submittedReadingJob.current = null;
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [route.page, route.reportId, analysisResult?.job_id]);
+
+  async function refreshHistory() {
+    const requestId = ++historyRequest.current;
+    setAccountBusy(true); setHistoryError("");
+    try { const items = await api.myReports(); if (requestId === historyRequest.current) { setHistory(items); setHistoryLoaded(true); } }
+    catch (reason) { if (!isSessionExpired(reason) && requestId === historyRequest.current) setHistoryError((reason as Error).message); }
+    finally { if (requestId === historyRequest.current) setAccountBusy(false); }
+  }
+
+  async function refreshCards() {
+    if (!authState?.payments_enabled || !authState.authenticated) return;
+    const requestId = ++accountRequest.current;
+    setCardsBusy(true); setAccountError("");
+    try { const next = await api.cardAccount(); if (requestId === accountRequest.current) setAccount(next); }
+    catch (reason) { if (!isSessionExpired(reason) && requestId === accountRequest.current) setAccountError((reason as Error).message); }
+    finally { if (requestId === accountRequest.current) setCardsBusy(false); }
+  }
+
+  useEffect(() => {
+    if (route.page === "reports" && authState?.authenticated) void refreshHistory();
+    return () => { historyRequest.current += 1; };
+  }, [route.page, authState?.user?.id, cardRevision]);
+
+  useEffect(() => {
+    if (["me", "coupon", "cards", "redeem"].includes(route.page)) void refreshCards();
+    const visible = () => { if (document.visibilityState === "visible" && ["me", "coupon"].includes(route.page)) void refreshCards(); };
+    const timer = window.setInterval(visible, 60000);
+    document.addEventListener("visibilitychange", visible);
+    return () => { accountRequest.current += 1; window.clearInterval(timer); document.removeEventListener("visibilitychange", visible); };
+  }, [route.page, authState?.authenticated, authState?.payments_enabled, authState?.user?.id, cardRevision]);
 
   useEffect(() => {
     let active = true;
+    const epoch = authEpoch.current;
     api.authState()
       .then((nextAuth) => {
-        if (!active) return;
+        if (!active || epoch !== authEpoch.current) return;
         setAuthState(nextAuth);
         if (nextAuth.authenticated) {
+          completeWechatLogin();
+          const pendingChart = takePendingChart();
+          if (pendingChart) { void submit(pendingChart, "chart", true); return; }
           const pending = takePendingAnalysis();
           if (pending) void submit(pending, "analysis", true);
-        }
+        } else if (shouldAutoLogin(nextAuth)) beginWechatLogin(true);
       })
       .catch(() => {
-        // Auth is an optional capability; deterministic charting stays available.
+        if (!active || epoch !== authEpoch.current) return;
+        setAuthState({ enabled: false, authenticated: false, require_for_analysis: false, analysis_limit_per_24h: 0, user: null });
+        setAuthUnavailable(true);
+        setError("账户服务暂时无法连接，请刷新页面后重试。");
       });
     return () => {
       active = false;
@@ -172,13 +345,12 @@ export function App() {
       inFlight = true;
       try {
         const status = await api.getAnalysisStatus(jobId);
-        if (stopped) return;
+        if (stopped || expiredSession.current) return;
         setAnalysisStatus(status);
         setChartId(status.chart_id);
         const result = await api.getAnalysis(jobId);
-        if (stopped) return;
+        if (stopped || expiredSession.current) return;
         setAnalysisResult(result);
-        setChart(result.chart);
         setMessage("");
         setNetworkState("online");
         setNetworkMessage("");
@@ -188,10 +360,10 @@ export function App() {
           schedule(2000);
         }
       } catch (reason) {
-        if (stopped) return;
+        if (stopped || isSessionExpired(reason) || expiredSession.current) return;
         const apiError = reason as ApiError;
         setMessage("");
-        if (apiError.status === 404) {
+        if (apiError.status === 404 || apiError.status === 401 || apiError.status === 403) {
           setError(apiError.message);
           clearSavedTask();
           setJobId("");
@@ -251,51 +423,46 @@ export function App() {
   }, [jobId, pollRevision]);
 
   function beginLogin() {
-    const returnTo = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    window.location.assign(`/api/v1/auth/wechat/start?return_to=${encodeURIComponent(returnTo)}`);
-  }
-
-  async function toggleAccount() {
-    const nextOpen = !accountOpen;
-    setAccountOpen(nextOpen);
-    if (!nextOpen) return;
-    setAccountBusy(true);
-    try {
-      setHistory(await api.myAnalyses());
-    } catch (reason) {
-      setError((reason as Error).message);
-    } finally {
-      setAccountBusy(false);
-    }
+    beginWechatLogin();
   }
 
   async function logout() {
     setAccountBusy(true);
     try {
       await api.logout();
+      pauseAutoLogin();
+      authEpoch.current += 1;
       setAuthState((current) => current ? { ...current, authenticated: false, user: null } : current);
-      setHistory([]);
-      setAccountOpen(false);
-      setMessage("已退出微信账号，本机已生成的页面仍可继续查看。 ");
+      historyRequest.current += 1; accountRequest.current += 1;
+      setHistory([]); setHistoryLoaded(false);
+      setAccount(null); setJobId(""); setChartId(""); setChart(null); setFreeChartId(null);
+      setAnalysisStatus(null); setAnalysisResult(null); setPendingPayload(null); clearSavedTask(); saveDraft(null);
+      try { sessionStorage.removeItem(PENDING_ANALYSIS_KEY); sessionStorage.removeItem(PENDING_CHART_KEY); } catch { /* Storage may be disabled. */ }
+      setError(""); setMessage("已退出登录。"); navigate("me");
     } catch (reason) {
-      setError((reason as Error).message);
+      if (!isSessionExpired(reason)) setError((reason as Error).message);
     } finally {
       setAccountBusy(false);
     }
   }
 
-  function openHistoryItem(item: AnalysisHistoryItem) {
+  function openHistoryItem(item: SavedReportItem) {
+    if (!item.job_id) {
+      setJobId(""); setAnalysisStatus(null); setAnalysisResult(null);
+      setChart(null); setFreeChartId(null); setPendingPayload(null);
+      setChartLoading(true); setChartLoadFinishedFor("");
+      setError(""); setMessage("");
+      navigate("chart", item.chart_id);
+      return;
+    }
     saveTask(item.job_id, item.chart_id);
     setJobId(item.job_id);
     setChartId(item.chart_id);
     setAnalysisStatus(null);
     setAnalysisResult(null);
-    setAccountOpen(false);
+    setError(""); setMessage("");
+    navigate("report", item.job_id);
     setPollRevision((value) => value + 1);
-    window.setTimeout(
-      () => document.getElementById("analysis-title")?.scrollIntoView?.({ behavior: "smooth" }),
-      0,
-    );
   }
 
   async function submit(
@@ -303,230 +470,178 @@ export function App() {
     mode: "chart" | "analysis",
     skipAuthCheck = false,
   ) {
-    if (
-      !skipAuthCheck
-      && mode === "analysis"
-      && authState?.enabled
-      && authState.require_for_analysis
-      && !authState.authenticated
-    ) {
-      savePendingAnalysis(payload);
-      beginLogin();
-      return;
-    }
     if (submissionLock.current) return;
     submissionLock.current = true;
+    const epoch = authEpoch.current;
     setBusy(mode);
     setError("");
     setMessage("");
     try {
+      if (!skipAuthCheck) {
+        if (authUnavailable) throw new Error("账户服务暂时无法连接，请刷新页面后重试。");
+        const currentAuth = authState || await api.authState();
+        if (expiredSession.current || epoch !== authEpoch.current) return;
+        if (!authState) setAuthState(currentAuth);
+        if (currentAuth.enabled && !currentAuth.authenticated
+          && (mode === "chart" || currentAuth.require_for_analysis || currentAuth.payments_enabled)) {
+          if (mode === "chart") { savePendingChart(payload); saveDraft(payload); }
+          else savePendingAnalysis(payload);
+          beginLogin(); return;
+        }
+      }
       if (mode === "chart") {
         const nextChart = await api.createChart(payload);
+        if (expiredSession.current || epoch !== authEpoch.current) return;
         setChart(nextChart);
-        setMessage("排盘完成。结果由后端确定性规则计算，不依赖 AI。 ");
-        window.setTimeout(() => document.getElementById("chart-title")?.scrollIntoView?.({ behavior: "smooth" }), 0);
+        setJobId(""); setChartId(""); setAnalysisResult(null); setAnalysisStatus(null);
+        setFreeChartId(nextChart.saved_chart_id || null);
+        setCardRevision(value => value + 1);
+        setPendingPayload(payload); saveDraft(payload, nextChart.saved_chart_id);
+        if (nextChart.analysis_job_id) navigate("report", nextChart.analysis_job_id);
+        else navigate("chart", nextChart.saved_chart_id);
+        setMessage("");
+        window.setTimeout(() => document.getElementById("chart-facts")?.scrollIntoView?.({ behavior: "smooth", block: "start" }), 0);
       } else {
-        const accepted = await api.createAnalysis(payload);
+        const accepted = freeChartId ? await api.unlockChart(freeChartId) : await api.createAnalysis(payload);
+        if (expiredSession.current || epoch !== authEpoch.current) return;
+        setCardRevision((value) => value + 1);
         const nextStatus = acceptedStatus(accepted);
         const savedLocally = saveTask(accepted.job_id, accepted.chart_id);
         setAnalysisStatus(nextStatus);
         setAnalysisResult(null);
         setJobId(accepted.job_id);
         setChartId(accepted.chart_id);
+        submittedReadingJob.current = accepted.job_id;
+        setPendingPayload(null); saveDraft(null); navigate("report", accepted.job_id, true);
         setMessage(
           !savedLocally
             ? "任务已提交；当前微信环境禁止本地存储，关闭页面后可能无法自动恢复。"
             : accepted.deduplicated
               ? "已找到相同任务，正在恢复已有进度。"
-              : "任务已提交，八个板块将在后端依次生成。 ",
+              : "",
         );
-        window.setTimeout(() => document.getElementById("analysis-title")?.scrollIntoView?.({ behavior: "smooth" }), 0);
       }
     } catch (reason) {
       setError((reason as Error).message);
+      if (isSessionExpired(reason)) {
+        setError("");
+        setPendingPayload(payload); saveDraft(payload, mode === "analysis" ? freeChartId : null);
+        if (mode === "chart") savePendingChart(payload);
+        return;
+      }
+      if ((reason as ApiError).code === "cards_required") {
+        setPendingPayload(payload); saveDraft(payload, freeChartId); navigate("cards");
+      }
     } finally {
       setBusy(null);
       submissionLock.current = false;
     }
   }
 
-  async function runAction(key: string, action: () => Promise<unknown>, success: string) {
-    setActionBusy(key);
-    setError("");
+  function requestDeleteReport(item: SavedReportItem) {
+    if (deletionLock.current) return;
+    setConfirmDialog({
+      title: "删除此报告？",
+      description: "删除后此命盘的八字详细解读需再次使用解读卡，此操作无法撤销",
+      cancelLabel: "返回",
+      confirmLabel: "确认删除",
+      danger: true,
+      action: () => void deleteReportData(item),
+    });
+  }
+
+  async function deleteReportData(item: SavedReportItem) {
+    if (deletionLock.current) return;
+    deletionLock.current = true;
+    setDeletingChartId(item.chart_id); setError("");
     try {
-      await action();
-      setMessage(success);
-      if (jobId && key.startsWith("retry:")) {
-        const status = await api.getAnalysisStatus(jobId);
-        setAnalysisStatus(status);
-        setPollRevision((value) => value + 1);
+      await api.deleteChart(item.chart_id);
+      if (expiredSession.current) return;
+      if (readSavedTask()?.chartId === item.chart_id) clearSavedTask();
+      if (chartId === item.chart_id) {
+        setJobId(""); setChartId(""); setAnalysisStatus(null); setAnalysisResult(null);
       }
+      if (freeChartId === item.chart_id) {
+        setChart(null); setFreeChartId(null); setPendingPayload(null);
+      setChartLoading(true); setChartLoadFinishedFor(""); saveDraft(null);
+      }
+      setHistory(items => items.filter(record => record.chart_id !== item.chart_id));
+      setCardRevision(value => value + 1);
+      setMessage("");
+      await refreshHistory();
     } catch (reason) {
-      setError((reason as Error).message);
+      if (!isSessionExpired(reason)) setError((reason as Error).message);
     } finally {
-      setActionBusy(null);
-      setConfirmDialog(null);
+      deletionLock.current = false;
+      setDeletingChartId(null); setConfirmDialog(null);
     }
   }
 
-  function retrySection(code: string) {
-    if (!jobId) return;
-    void runAction(`retry:${code}`, () => api.retrySection(jobId, code), "已重新排队，将继续更新本板块。 ");
+  function openPaymentPage() {
+    if (!pendingPayload || busy) return;
+    saveDraft(pendingPayload, freeChartId);
+    navigate("cards");
   }
 
-  function cancelAnalysis() {
-    if (!jobId) return;
-    setConfirmDialog({
-      title: "取消当前分析？",
-      description: "已完成的板块会保留，尚未开始的板块将停止生成。",
-      confirmLabel: "确认取消",
-      action: () => void runAction("cancel", async () => {
-        const status = await api.cancelAnalysis(jobId);
-        setAnalysisStatus(status);
-        setPollRevision((value) => value + 1);
-      }, "取消请求已提交。 "),
-    });
+  function unlockFullReport() {
+    if (!pendingPayload || busy) return;
+    if (!authState?.authenticated || !authState.payments_enabled) {
+      openPaymentPage();
+      return;
+    }
+    void submit(pendingPayload, "analysis");
   }
 
-  function deleteAnalysis() {
-    if (!jobId) return;
-    setConfirmDialog({
-      title: "删除这份 AI 分析？",
-      description: "分析正文和任务记录会被删除，出生信息与命盘快照暂时保留。此操作无法撤销。",
-      confirmLabel: "删除分析",
-      danger: true,
-      action: () => void runAction("delete-analysis", async () => {
-        await api.deleteAnalysis(jobId);
-        clearSavedTask();
-        setJobId("");
-        setAnalysisStatus(null);
-        setAnalysisResult(null);
-      }, "分析已删除。 "),
-    });
-  }
-
-  function deleteChart() {
-    if (!chartId) return;
-    setConfirmDialog({
-      title: "删除全部出生资料？",
-      description: "出生信息、命盘快照、全部分析及调用记录都会被彻底删除。此操作无法撤销。",
-      confirmLabel: "全部删除",
-      danger: true,
-      action: () => void runAction("delete-chart", async () => {
-        await api.deleteChart(chartId);
-        clearSavedTask();
-        setJobId("");
-        setChartId("");
-        setChart(null);
-        setAnalysisStatus(null);
-        setAnalysisResult(null);
-      }, "出生信息及关联结果已删除。 "),
-    });
-  }
-
+  const page = route.page;
+  const detail = page === "report";
+  const reportResult = analysisResult?.job_id === route.reportId ? analysisResult : null;
+  const reportStatus = analysisStatus?.job_id === route.reportId ? analysisStatus : null;
+  const titleFor: Partial<Record<CustomerRoute, string>> = { cards: "解读卡", coupon: "优惠券", redeem: "兑换码", review: "写评价", service: "联系客服", privacy: "隐私与服务说明" };
   return (
-    <div className="app-shell">
-      <header className="site-header">
-        <a className="brand" href="#top" aria-label="知命八字排盘首页">
-          <span className="brand-seal">命</span>
-          <span><b>知命</b><small>确定性八字排盘</small></span>
-        </a>
-        <nav aria-label="页面导航">
-          <a href="#form">出生信息</a>
-          <a href="#result">排盘结果</a>
-          <a href="#analysis">AI 分析</a>
-        </nav>
-        <span className="api-state"><i /> {weChatState.isWeChat ? "微信 H5" : "移动 H5"} · 规则引擎</span>
-        {authState ? (
-          <AccountPanel
-            auth={authState}
-            open={accountOpen}
-            busy={accountBusy}
-            history={history}
-            onToggle={() => void toggleAccount()}
-            onLogin={beginLogin}
-            onLogout={() => void logout()}
-            onOpenReport={openHistoryItem}
-          />
-        ) : null}
-      </header>
+    <CustomerNavigationContext.Provider value={navigation}><div className={`app-shell customer-app customer-page-${page}`} onContextMenu={preventContentInteraction} onDragStart={preventContentInteraction}>
+      <main className="customer-main" id="top">
+        {version.updateAvailable && <div className="update-banner" role="status"><span>发现新版本</span><button onClick={version.refresh}>刷新更新</button></div>}
+        {networkState !== "online" && <div className={`network-banner network-${networkState}`} role="status"><p>{networkMessage || "网络较慢，请稍后重试。"}</p></div>}
+        {(message || error) && <div className={`global-message ${error ? "global-error" : "global-success"}`} role={error ? "alert" : "status"}><p>{error || message}</p><button type="button" onClick={() => { setError(""); setMessage(""); }} aria-label="关闭提示">×</button></div>}
+        {sessionExpired && ["measure", "me", "reports", "report", "chart", "cards", "coupon", "redeem", "review"].includes(page) && <section className="paper-card session-expired" role="alert"><h2>登录已过期</h2><p>请重新登录后继续查看报告和卡券。</p><button type="button" className="button button-primary" onClick={beginLogin}>重新登录</button></section>}
 
-      <main id="top">
-        <section className="intro">
-          <div className="intro-copy">
-            <div className="eyebrow"><span /> 规则可审计 · 结果可追溯</div>
-            <h1>把生辰交给规则，<br /><em>把判断留给自己。</em></h1>
-            <p>基于立春换年、节令换月、真太阳时与 23 点换日的确定性排盘。AI 只负责文化解读，不参与四柱计算。</p>
-          </div>
-          <div className="intro-orbit" aria-hidden="true">
-            <span className="orbit-ring ring-one" />
-            <span className="orbit-ring ring-two" />
-            <span className="orbit-center">天<br />地<br />人</span>
-            <i className="orbit-mark mark-one">甲</i>
-            <i className="orbit-mark mark-two">子</i>
-            <i className="orbit-mark mark-three">辰</i>
-            <i className="orbit-mark mark-four">午</i>
-          </div>
-        </section>
-
-        <div className="top-disclaimer" role="note">
-          <b>文化参考，不是人生判决</b>
-          <span>命理内容不构成医疗、投资、法律建议或对人生事件的确定性预测，请勿据此替代专业意见与现实判断。</span>
+        <div hidden={page !== "measure"}>
+          <header className="plum-brand"><h1>四柱知微</h1><p className="brand-caption">四柱观其势 · 五行知其微</p></header>
+          <div id="form"><BirthForm busy={busy} onSubmit={submit} requireCards={authState?.payments_enabled} chartOnly active={page === "measure"} /></div>
+          <Reviews />
+          <p className="customer-footnote">传统文化参考，请结合现实判断。</p>
         </div>
 
-        {version.updateAvailable && (
-          <div className="update-banner" role="status">
-            <span><b>发现新版本</b> 为避免微信缓存旧页面，建议立即刷新。</span>
-            <button type="button" onClick={version.refresh}>刷新更新</button>
-          </div>
-        )}
+        {page === "chart" && !sessionExpired && <>
+          <ReportBack onBack={() => goBack(route.chartId ? "reports" : "measure")} />
+          {chart && (!route.chartId || freeChartId === route.chartId) ? <><ChartResultView chart={chart} /><div className="report-reading-section"><h2 className="report-reading-heading">八字解读</h2><ReadingPreview onUnlock={unlockFullReport} busy={busy !== null} usesCard={Boolean(authState?.payments_enabled)} /></div></> : (route.chartId && (!authState || (authState.authenticated && (chartLoading || chartLoadFinishedFor !== route.chartId)))) ? <ReportPlaceholder key={route.chartId} /> : route.chartId ? <div className="paper-card report-empty"><h2>{authState?.authenticated ? "当前无法读取命盘" : "登录后查看报告"}</h2><button className="button button-primary" onClick={() => authState?.authenticated ? navigate("reports") : beginLogin()}>{authState?.authenticated ? "返回报告列表" : "微信登录"}</button></div> : <div className="paper-card report-empty"><h2>请先填写出生资料</h2><button className="button button-primary" onClick={() => pendingPayload ? void submit(pendingPayload, "chart") : navigate("measure")}>{pendingPayload ? "恢复本次排盘" : "去测算"}</button></div>}
+        </>}
 
-        {networkState !== "online" && (
-          <div className={`network-banner network-${networkState}`} role="status">
-            <span aria-hidden="true">{networkState === "offline" ? "×" : "…"}</span>
-            <p>{networkMessage || (networkState === "offline" ? "当前处于离线状态。" : "当前网络较慢，请耐心等待。")}</p>
-          </div>
-        )}
+        {page === "reports" && !sessionExpired && <ReportList auth={authState} items={history} loaded={historyLoaded} busy={accountBusy} error={historyError} onLogin={beginLogin} onMeasure={() => navigate("measure")} onOpen={openHistoryItem} onDelete={requestDeleteReport} deletingChartId={deletingChartId} onRefresh={() => void refreshHistory()} onService={() => navigate("service")} />}
 
-        <div id="form"><BirthForm busy={busy} onSubmit={submit} /></div>
+        {detail && !sessionExpired && <>
+          <ReportBack onBack={() => goBack("reports")} />
+          {reportResult && <ChartResultView chart={reportResult.chart} />}
+          {(reportResult || (reportStatus && submittedReadingJob.current === jobId)) && <div className="report-reading-section" id="analysis"><h2 className="report-reading-heading">八字解读</h2><AnalysisPanel status={reportStatus} result={reportResult} /></div>}
+          {authState?.authenticated && reportResult?.job_id === jobId && reportResult.status === "completed" && reportResult.sections.length === 8 && reportResult.sections.every(s => s.status === "completed" && s.content?.trim()) && <div className="report-review-entry"><button className="text-button" type="button" onClick={() => navigate("review", reportResult.job_id)}>写评价</button></div>}
+          {!reportResult && (!reportStatus || submittedReadingJob.current !== jobId) && (jobId ? <ReportPlaceholder key={route.reportId} /> : <div className="paper-card report-empty" role="alert"><p>该报告当前无法读取，请返回报告列表。</p></div>)}
+        </>}
 
-        {(message || error) && (
-          <div className={`global-message ${error ? "global-error" : "global-success"}`} role={error ? "alert" : "status"}>
-            <span aria-hidden="true">{error ? "!" : "✓"}</span>
-            <p>{error || message}</p>
-            {error && <button type="button" onClick={() => setError("")} aria-label="关闭错误提示">×</button>}
-          </div>
-        )}
-
-        <div id="result">
-          {chart ? <ChartResultView chart={chart} /> : (
-            <section className="empty-state" aria-label="排盘空状态">
-              <span>四柱</span>
-              <h2>命盘结果将在这里展开</h2>
-              <p>填写出生信息并选择“开始排盘”，无需数据库或 AI 服务。</p>
-            </section>
-          )}
-        </div>
-
-        <div id="analysis">
-          <AnalysisPanel
-            status={analysisStatus}
-            result={analysisResult}
-            actionBusy={actionBusy}
-            onRetry={retrySection}
-            onCancel={cancelAnalysis}
-            onDeleteAnalysis={deleteAnalysis}
-            onDeleteChart={deleteChart}
-          />
-        </div>
+        {page === "me" && !sessionExpired && <MyAccount auth={authState} account={account} loading={cardsBusy} error={accountError} navigate={navigate} onLogin={beginLogin} onLogout={() => void logout()} onRefresh={() => void refreshCards()} />}
+        {titleFor[page] && (!sessionExpired || ["service", "privacy"].includes(page)) && <PageTitle title={titleFor[page]!} onBack={() => page === "review" ? goBack(route.reportId ? "report" : "reports", route.reportId) : goBack("me")} />}
+        {page === "cards" && !sessionExpired && <>
+          {!authState ? <AccountPlaceholder /> : authState.payments_enabled ? <CardShop key={`${authState.user?.id || "guest"}-${page}`} auth={authState} revision={cardRevision} onLogin={beginLogin} onPaid={() => { setCardRevision(r => r + 1); navigation.back("#/me"); }} /> : <div className="paper-card report-empty"><CustomerSymbol /><h2>解读卡购买暂未开放</h2><p>开放后，你可以在这里购买解读卡套餐。</p></div>}
+        </>}
+        {page === "coupon" && !sessionExpired && <CouponPage account={account} auth={authState} onLogin={beginLogin} error={accountError} onRetry={() => void refreshCards()} />}
+        {page === "review" && !sessionExpired && <ReviewPage key={`${authState?.user?.id || "guest"}-${route.reportId || ""}`} reportId={route.reportId} auth={authState} onLogin={beginLogin} onSubmitted={() => setCardRevision(r => r + 1)} onReturn={() => goBack("report", route.reportId)} />}
+        {page === "redeem" && !sessionExpired && <RedeemPage key={authState?.user?.id || "guest"} auth={authState} onLogin={beginLogin} onRedeemed={() => setCardRevision(r => r + 1)} />}
+        {page === "service" && <ServicePage />}
+        {page === "privacy" && <PrivacyPage />}
       </main>
-
-      <footer>
-        <div className="brand compact"><span className="brand-seal">命</span><span><b>知命</b><small>规则先于解释</small></span></div>
-        <p>本页面不会要求或保存模型密钥、数据库密码。DeepSeek 密钥只应配置在后端 worker 环境中。</p>
-      </footer>
-
-      <ConfirmDialog dialog={confirmDialog} busy={actionBusy !== null} onCancel={() => setConfirmDialog(null)} />
-    </div>
+      <BottomTabs page={page === "chart" && route.chartId ? "reports" : page} navigate={page => navigation.tab(`#/${page}`)} />
+      <ConfirmDialog dialog={confirmDialog} busy={deletingChartId !== null} onCancel={() => setConfirmDialog(null)} />
+    </div></CustomerNavigationContext.Provider>
   );
 }
+
+function CustomerSymbol() { return <div className="empty-scroll" aria-hidden="true">知</div>; }

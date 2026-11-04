@@ -189,6 +189,117 @@ def test_partial_result_survives_and_failed_section_can_retry(persisted_app) -> 
     assert all(section["content"] for section in completed["sections"])
 
 
+@pytest.mark.parametrize(
+    ("responses", "expected_chars", "expected_calls"),
+    [
+        (["甲" * 1690, "乙" * 2800], 2800, 2),
+        (["甲" * 1812, "乙" * 1200, "丙" * 1900], 1900, 3),
+        (["甲" * 1690, LLMProviderError("llm_timeout", "超时")], 1690, 2),
+        (["甲" * 1690, "```text\n  \n```"], 1690, 2),
+    ],
+)
+def test_worker_saves_draft_and_bounds_supplements(
+    persisted_app, responses, expected_chars, expected_calls,
+) -> None:
+    client, database = persisted_app
+    accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
+
+    class SequenceProvider(FakeDetailedProvider):
+        async def complete_detailed(self, system_prompt, user_prompt):
+            if self.calls:
+                with database.session() as session:
+                    saved = session.scalar(select(AnalysisSectionRecord).where(
+                        AnalysisSectionRecord.job_id == accepted["job_id"],
+                        AnalysisSectionRecord.code == "personality",
+                    ))
+                    assert saved.content == responses[0]
+                    assert saved.status == "running"
+                assert "上一版正文（JSON字符串）" in user_prompt
+                assert responses[0] in user_prompt
+                assert "补足缺失" in user_prompt
+            response = responses[len(self.calls)]
+            self.calls.append(user_prompt)
+            if isinstance(response, Exception):
+                raise response
+            return LLMCompletion(content=response, finish_reason="stop")
+
+    provider = SequenceProvider()
+    worker = AnalysisWorker(database, provider, AnalysisQueueSettings(
+        model_id="fake-model", prompt_version="test-prompt-v1", max_attempts=3,
+    ))
+    assert asyncio.run(worker.run_once())
+    result = client.get(f"/api/v1/analyses/{accepted['job_id']}").json()
+    section = next(s for s in result["sections"] if s["code"] == "personality")
+    assert section["status"] == "completed"
+    assert section["char_count"] == expected_chars
+    assert section["error"] is None
+    assert len(provider.calls) == expected_calls
+    with database.session() as session:
+        saved = session.scalar(select(AnalysisSectionRecord).where(
+            AnalysisSectionRecord.job_id == accepted["job_id"],
+            AnalysisSectionRecord.code == "personality",
+        ))
+        assert saved.next_attempt_at is None
+        assert saved.locked_by is None
+        assert saved.attempt_count == expected_calls
+
+
+def test_saved_draft_survives_expired_lease_and_failed_recovery(persisted_app) -> None:
+    client, database = persisted_app
+    accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
+    settings = AnalysisQueueSettings(model_id="fake-model", prompt_version="test-prompt-v1")
+    original = AnalysisWorker(database, FakeDetailedProvider(), settings, worker_id="original")
+    job_id, section_id = original._claim_section()
+    assert job_id == accepted["job_id"]
+    original._save_draft(section_id, "保留正文" * 450)
+    with database.session() as session:
+        section = session.get(AnalysisSectionRecord, section_id)
+        section.lease_expires_at = utcnow() - timedelta(seconds=1)
+        session.commit()
+    recovered = AnalysisWorker(database, FakeDetailedProvider({"personality"}), settings)
+    assert recovered.recover_expired_leases() == 1
+    assert original._save_draft(section_id, "过期进程不能覆盖") is None
+    assert asyncio.run(recovered.run_once())
+    result = client.get(f"/api/v1/analyses/{job_id}").json()["sections"][0]
+    assert result["status"] == "completed"
+    assert result["content"] == "保留正文" * 450
+    assert result["error"] is None
+
+
+def test_empty_response_logs_usage_and_stop_reason_without_reasoning_text(
+    persisted_app, caplog,
+) -> None:
+    client, database = persisted_app
+    accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
+
+    class EmptyProvider(FakeDetailedProvider):
+        async def complete_detailed(self, system_prompt, user_prompt):
+            raise LLMProviderError("llm_empty_response", "空内容", {
+                "request_id": "req-empty", "prompt_tokens": 42,
+                "completion_tokens": 30000, "total_tokens": 30042,
+                "finish_reason": "length", "reasoning_tokens": 30000,
+                "reasoning_content": "NEVER_LOG_REASONING_SENTINEL",
+            })
+
+    worker = AnalysisWorker(database, EmptyProvider(), AnalysisQueueSettings(
+        model_id="fake-model", prompt_version="test-prompt-v1", retry_delays_seconds=(),
+    ))
+    with caplog.at_level("INFO", logger="bazi.worker"):
+        asyncio.run(worker.run_once())
+    with database.session() as session:
+        call = session.scalar(select(LLMCallLogRecord))
+        assert call.completion_tokens == 30000
+        assert call.total_tokens == 30042
+        assert call.provider_request_id == "req-empty"
+    records = [r for r in caplog.records if r.message == "llm_call_result"]
+    assert records[0].finish_reason == "length"
+    assert records[0].reasoning_tokens == 30000
+    assert "NEVER_LOG_REASONING_SENTINEL" not in str([r.__dict__ for r in records])
+    result = client.get(f"/api/v1/analyses/{accepted['job_id']}").json()["sections"][0]
+    assert result["status"] == "failed"
+    assert result["content"] is None
+
+
 def test_worker_recovers_expired_running_task(persisted_app) -> None:
     client, database = persisted_app
     accepted = client.post("/api/v1/analyses", json=chart_payload()).json()
@@ -374,6 +485,7 @@ def test_alembic_migration_creates_core_and_auth_tables(
         database.dispose()
     assert {"charts", "analysis_jobs", "analysis_sections", "llm_call_logs"} <= tables
     assert {"users", "wechat_identities", "auth_sessions", "oauth_states"} <= tables
+    assert {"card_wallets", "weekly_coupons", "payment_orders", "card_ledger"} <= tables
     assert "user_id" in chart_columns
     assert {
         "failure_count",

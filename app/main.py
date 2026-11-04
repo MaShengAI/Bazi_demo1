@@ -1,28 +1,39 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import time
 import uuid
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from sqlalchemy.exc import SQLAlchemyError
+from starlette.concurrency import run_in_threadpool
 
 from app import __version__
+from app.admin import AdminError, AdminService, AdminSettings
+from app.api.admin import router as admin_router
+from app.api.redemptions import router as redemption_router
+from app.api.reviews import router as review_router
+from app.api.payments import router as payment_router
 from app.api.routes import router
 from app.config import AnalysisQueueSettings, AuthSettings
 from app.database import Database
 from app.domain.calendar.solar_terms import SolarTermDataError, SolarTermRepository
 from app.domain.timezone.service import TimeNormalizationError
 from app.observability import configure_logging, request_id_context
+from app.payment_config import PaymentSettings
 from app.repositories.locations import LocationRepository
 from app.services.analysis_jobs import AnalysisJobError, AnalysisJobService
 from app.services.analysis_service import AnalysisServiceError
 from app.services.auth import AuthError, AuthService
+from app.services.cards import PaymentError
 from app.services.chart_service import ChartService, ChartServiceError
+from app.services.payments import PaymentService
+from app.services.refunds import RefundService
 
 configure_logging()
 logger = logging.getLogger("bazi.api")
@@ -43,21 +54,77 @@ async def lifespan(app: FastAPI):
     app.state.locations = locations
     chart_service = ChartService(locations, terms)
     app.state.chart_service = chart_service
+    app.state.admin_service = None
+    try:
+        admin_settings = AdminSettings.from_env()
+        if admin_settings is not None:
+            app.state.admin_service = AdminService(admin_settings)
+    except (ValueError, TypeError, SQLAlchemyError):
+        logger.warning("admin_configuration_unavailable")
     database = Database.from_env()
     app.state.database = database
     auth_settings = AuthSettings.from_env()
+    payment_settings = PaymentSettings.from_env()
+    payment_settings.validate(auth_settings)
+    app.state.payment_settings = payment_settings
+    app.state.payment_service = (
+        PaymentService(database, payment_settings, auth_settings)
+        if database is not None and payment_settings.enabled
+        else None
+    )
     app.state.auth_settings = auth_settings
-    app.state.auth_service = AuthService(database, auth_settings) if database is not None else None
-    app.state.analysis_job_service = (
-        AnalysisJobService(database, chart_service, AnalysisQueueSettings.from_env())
+    app.state.auth_service = (
+        AuthService(database, auth_settings, commerce_enabled=payment_settings.enabled)
         if database is not None
         else None
+    )
+    app.state.analysis_job_service = (
+        AnalysisJobService(
+            database,
+            chart_service,
+            AnalysisQueueSettings.from_env(),
+            require_cards=payment_settings.enabled,
+        )
+        if database is not None
+        else None
+    )
+
+    async def reconcile_payments():
+        while True:
+            await asyncio.sleep(60)
+            if app.state.payment_service is not None:
+                try:
+                    await run_in_threadpool(app.state.payment_service.reconcile)
+                except Exception as exc:
+                    logger.warning(
+                        "payment_reconcile_unavailable", extra={"error_type": type(exc).__name__}
+                    )
+                if payment_settings.refunds_enabled:
+                    try:
+                        payments = app.state.payment_service
+                        refunds = RefundService(
+                            payments.database, payment_settings, auth_settings, payments.client
+                        )
+                        await run_in_threadpool(refunds.reconcile)
+                    except Exception as exc:
+                        logger.warning(
+                            "refund_reconcile_unavailable", extra={"error_type": type(exc).__name__}
+                        )
+
+    reconciliation_task = (
+        asyncio.create_task(reconcile_payments()) if payment_settings.mode == "live" else None
     )
     try:
         yield
     finally:
+        if reconciliation_task is not None:
+            reconciliation_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await reconciliation_task
         if database is not None:
             database.dispose()
+        if app.state.admin_service is not None:
+            app.state.admin_service.database.dispose()
 
 
 app = FastAPI(
@@ -68,6 +135,10 @@ app = FastAPI(
     default_response_class=UTF8JSONResponse,
 )
 app.include_router(router)
+app.include_router(payment_router)
+app.include_router(admin_router)
+app.include_router(redemption_router)
+app.include_router(review_router)
 
 
 @app.middleware("http")
@@ -81,6 +152,12 @@ async def request_context(request: Request, call_next):
         response = await call_next(request)
         status_code = response.status_code
         response.headers["X-Request-ID"] = request_id
+        if request.url.path.startswith("/api/v1/"):
+            response.headers["Cache-Control"] = "private, no-store, max-age=0"
+        if request.url.path.startswith("/api/v1/admin"):
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["Referrer-Policy"] = "no-referrer"
         return response
     except Exception:
         logger.exception(
@@ -141,6 +218,16 @@ async def auth_error(_: Request, exc: AuthError) -> JSONResponse:
     return error_response(exc.status_code, exc.code, str(exc))
 
 
+@app.exception_handler(AdminError)
+async def admin_error(_: Request, exc: AdminError) -> JSONResponse:
+    return error_response(exc.status, exc.code, str(exc))
+
+
+@app.exception_handler(PaymentError)
+async def payment_error(_: Request, exc: PaymentError) -> JSONResponse:
+    return error_response(exc.status_code, exc.code, str(exc))
+
+
 @app.exception_handler(TimeNormalizationError)
 async def time_error(_: Request, exc: TimeNormalizationError) -> JSONResponse:
     return error_response(422, exc.code, str(exc), exc.details)
@@ -153,6 +240,10 @@ async def term_error(_: Request, exc: SolarTermDataError) -> JSONResponse:
 
 @app.exception_handler(RequestValidationError)
 async def validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
+    if _.url.path == "/api/v1/redemptions":
+        return error_response(422, "redemption_input_invalid", "请检查兑换码格式")
+    if _.url.path.startswith("/api/v1/admin"):
+        return error_response(422, "admin_filter_invalid", "请检查筛选条件。")
     # Pydantic 的上下文可能包含异常对象，转成字符串后才能安全序列化为 JSON。
     errors = exc.errors()
     for item in errors:

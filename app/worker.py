@@ -21,17 +21,20 @@ from app.integrations.llm import (
     LLMProviderError,
     LLMSettings,
     OpenAICompatibleLLM,
+    _finish_reason,
+    _optional_int,
 )
 from app.models import AnalysisJobRecord, AnalysisSectionRecord, LLMCallLogRecord
 from app.observability import configure_logging
 from app.services.analysis_service import (
-    ANALYSIS_MAXIMUM_CHARS,
-    ANALYSIS_MINIMUM_CHARS,
     ANALYSIS_SECTIONS,
     SYSTEM_PROMPT,
     _character_count,
     _normalize_content,
+    build_revision_hint,
     build_section_prompt,
+    prefer_section_content,
+    section_length_status,
 )
 
 SECTION_BY_CODE = {section.code: section for section in ANALYSIS_SECTIONS}
@@ -273,9 +276,8 @@ class AnalysisWorker:
         return len(recovered_ids)
 
     async def _process_section(self, job_id: str, section_id: str) -> None:
-        length_hint = ""
         for local_attempt in range(1, self.settings.max_attempts + 1):
-            prepared = self._prepare_call(job_id, section_id, length_hint)
+            prepared = self._prepare_call(job_id, section_id)
             if prepared is None:
                 self._refresh_job_status(job_id)
                 return
@@ -285,6 +287,9 @@ class AnalysisWorker:
                 completion = await self._call_provider_with_heartbeat(
                     section_id, SYSTEM_PROMPT, prompt
                 )
+                content = _normalize_content(completion.content)
+                if not content:
+                    raise LLMProviderError("llm_empty_response", "解读服务暂未返回内容")
             except LLMProviderError as exc:
                 latency_ms = round((time.perf_counter() - started) * 1000)
                 request_id = exc.details.get("request_id")
@@ -295,6 +300,11 @@ class AnalysisWorker:
                     request_id=request_id if isinstance(request_id, str) else None,
                     error_code=exc.code,
                     error=str(exc),
+                    prompt_tokens=_optional_int(exc.details.get("prompt_tokens")),
+                    completion_tokens=_optional_int(exc.details.get("completion_tokens")),
+                    total_tokens=_optional_int(exc.details.get("total_tokens")),
+                    finish_reason=exc.details.get("finish_reason"),
+                    reasoning_tokens=exc.details.get("reasoning_tokens"),
                 )
                 self._retry_or_fail_section(section_id, exc.code, str(exc))
                 self._refresh_job_status(job_id)
@@ -332,13 +342,6 @@ class AnalysisWorker:
                 return
 
             latency_ms = round((time.perf_counter() - started) * 1000)
-            content = _normalize_content(completion.content)
-            char_count = _character_count(content)
-            length_status = "ok"
-            if char_count < ANALYSIS_MINIMUM_CHARS:
-                length_status = "short"
-            elif char_count > ANALYSIS_MAXIMUM_CHARS:
-                length_status = "long"
             self._finish_call(
                 log_id,
                 status="completed",
@@ -347,10 +350,15 @@ class AnalysisWorker:
                 prompt_tokens=completion.prompt_tokens,
                 completion_tokens=completion.completion_tokens,
                 total_tokens=completion.total_tokens,
+                finish_reason=completion.finish_reason,
+                reasoning_tokens=completion.reasoning_tokens,
             )
+            draft = self._save_draft(section_id, content)
+            if draft is None:
+                self._refresh_job_status(job_id)
+                return
+            content, char_count, length_status = draft
             if length_status != "ok" and local_attempt < self.settings.max_attempts:
-                direction = "扩写" if length_status == "short" else "精简"
-                length_hint = f"上次输出为{char_count}字符，请明显{direction}并重新完整作答。"
                 continue
             self._complete_section(section_id, content, char_count, length_status)
             self._refresh_job_status(job_id)
@@ -368,7 +376,7 @@ class AnalysisWorker:
             return
 
     def _prepare_call(
-        self, job_id: str, section_id: str, length_hint: str
+        self, job_id: str, section_id: str
     ) -> tuple[str, str] | None:
         now = utcnow()
         with self.database.session() as session:
@@ -404,7 +412,7 @@ class AnalysisWorker:
             prompt = build_section_prompt(
                 spec,
                 job.chart.snapshot_json,
-                length_hint=length_hint,
+                length_hint=build_revision_hint(section.content) if section.content else "",
                 analysis_date=job.created_at.date(),
             )
             session.add(log)
@@ -418,6 +426,28 @@ class AnalysisWorker:
             if isinstance(result, LLMCompletion):
                 return result
         return LLMCompletion(content=await self.provider.complete(system_prompt, user_prompt))
+
+    def _save_draft(self, section_id: str, candidate: str) -> tuple[str, int, str] | None:
+        """Persist before another paid call; an error or worker restart must not erase it."""
+        with self.database.session() as session:
+            section = session.scalar(
+                select(AnalysisSectionRecord)
+                .where(AnalysisSectionRecord.id == section_id)
+                .with_for_update()
+            )
+            if (
+                section is None or section.status != "running"
+                or section.locked_by != self.worker_id
+            ):
+                return None
+            content = prefer_section_content(section.content or "", candidate)
+            count = _character_count(content)
+            length = section_length_status(count)
+            section.content = content
+            section.char_count = count
+            section.length_status = length
+            session.commit()
+            return content, count, length
 
     async def _call_provider_with_heartbeat(
         self, section_id: str, system_prompt: str, user_prompt: str
@@ -457,6 +487,8 @@ class AnalysisWorker:
         total_tokens: int | None = None,
         error_code: str | None = None,
         error: str | None = None,
+        finish_reason: object = None,
+        reasoning_tokens: object = None,
     ) -> None:
         with self.database.session() as session:
             log = session.get(LLMCallLogRecord, log_id)
@@ -472,6 +504,18 @@ class AnalysisWorker:
             log.error = error
             log.finished_at = utcnow()
             session.commit()
+        # Only allowlisted metadata, never prompts, answers or reasoning text.
+        logger.info(
+            "llm_call_result",
+            extra={
+                "call_id": log_id,
+                "call_status": status,
+                "finish_reason": _finish_reason(finish_reason),
+                "reasoning_tokens": _optional_int(reasoning_tokens),
+                "completion_tokens": completion_tokens,
+                "error_code": error_code,
+            },
+        )
 
     def _complete_section(
         self, section_id: str, content: str, char_count: int, length_status: str
@@ -509,6 +553,22 @@ class AnalysisWorker:
                 or section.status != "running"
                 or section.locked_by != self.worker_id
             ):
+                return
+            if section.content and section.content.strip():
+                # A failed supplement must not make a readable section fail or
+                # schedule another batch of length attempts after every backoff.
+                section.status = "completed"
+                section.failure_count = 0
+                section.error_code = None
+                section.error = None
+                section.finished_at = now
+                section.next_attempt_at = None
+                self._clear_section_lease(section)
+                session.commit()
+                logger.info(
+                    "section_draft_retained",
+                    extra={"section_id": section.id, "supplement_error_code": error_code},
+                )
                 return
             section.failure_count += 1
             section.error_code = error_code

@@ -73,7 +73,10 @@ class WechatOAuthClient:
             if not isinstance(openid, str) or not openid:
                 raise WechatOAuthError("wechat_invalid_response", "微信授权响应缺少openid")
             profile_payload: dict[str, Any] | None = None
-            if self.settings.oauth_scope == "snsapi_userinfo":
+            # Use the scope granted by WeChat. Automatic base login must not try
+            # to fetch profile data just because manual profile sharing is enabled.
+            granted_scopes = str(payload.get("scope") or self.settings.oauth_scope).split(",")
+            if "snsapi_userinfo" in granted_scopes:
                 if not isinstance(access_token, str) or not access_token:
                     raise WechatOAuthError(
                         "wechat_invalid_response", "微信授权响应缺少access_token"

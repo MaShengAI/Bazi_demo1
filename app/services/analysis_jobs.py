@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
@@ -15,7 +16,8 @@ from app.database import Database
 from app.models import AnalysisJobRecord, AnalysisSectionRecord, ChartRecord
 from app.schemas.chart import ChartRequest
 from app.services.analysis_service import ANALYSIS_DISCLAIMER, ANALYSIS_SECTIONS
-from app.services.chart_service import ChartService
+from app.services.cards import debit_report, lock_user
+from app.services.chart_service import ChartService, with_annual_branch_stars
 
 
 class AnalysisJobError(RuntimeError):
@@ -56,10 +58,13 @@ class AnalysisJobService:
         database: Database,
         chart_service: ChartService,
         settings: AnalysisQueueSettings,
+        *,
+        require_cards: bool = False,
     ):
         self.database = database
         self.chart_service = chart_service
         self.settings = settings
+        self.require_cards = require_cards
 
     def submit(
         self,
@@ -67,8 +72,19 @@ class AnalysisJobService:
         *,
         user_id: str | None = None,
         analysis_limit_per_24h: int = 0,
+        chart_id: str | None = None,
     ) -> Submission:
-        chart = self.chart_service.calculate(request)
+        if self.require_cards and user_id is None:
+            raise AnalysisJobError(401, "authentication_required", "请先登录再使用解读卡")
+        if chart_id is not None:
+            # Unlock the stored facts, not a recalculated or client-supplied chart.
+            stored = self.saved_chart(chart_id, actor_user_id=user_id)
+            request = ChartRequest.model_validate(stored["request"])
+            chart = cast(dict[str, object], stored["snapshot"])
+        else:
+            chart = self.chart_service.calculate(request)
+        # Keep display metadata outside immutable calculation snapshots and debit identity.
+        cast(dict[str, Any], chart["request"]).pop("birth_calendar", None)
         rule_version = cast(dict[str, Any], chart["ruleset_versions"])
         snapshot_hash = canonical_hash(chart)
         hash_payload: dict[str, object] = {
@@ -83,10 +99,28 @@ class AnalysisJobService:
             hash_payload["user_id"] = user_id
         request_hash = canonical_hash(hash_payload)
         with self.database.session() as session:
+            # Lock BEFORE inserting the chart's user FK. Otherwise two MySQL
+            # submissions can both hold a shared FK lock and deadlock on debit.
+            if (self.require_cards or chart_id is not None) and user_id is not None:
+                lock_user(session, user_id)
+            chart_record = None
+            if chart_id is not None:
+                chart_record = session.get(ChartRecord, chart_id)
+                if chart_record is None or chart_record.user_id != user_id or user_id is None:
+                    raise AnalysisJobError(404, "chart_not_found", "命盘不存在或无权访问")
+                if chart_record.jobs:
+                    restored = max(chart_record.jobs, key=lambda job: (job.created_at, job.id))
+                    return Submission(restored.id, chart_id, restored.status, True)
             existing = session.scalar(
                 select(AnalysisJobRecord).where(AnalysisJobRecord.request_hash == request_hash)
             )
             if existing is not None:
+                if request.birth_calendar:
+                    existing.chart.request_json = {
+                        **existing.chart.request_json,
+                        "birth_calendar": request.birth_calendar,
+                    }
+                    session.commit()
                 return Submission(existing.id, existing.chart_id, existing.status, True)
 
             if user_id is not None and analysis_limit_per_24h > 0:
@@ -107,9 +141,14 @@ class AnalysisJobService:
                         {"limit": analysis_limit_per_24h},
                     )
 
-            chart_record = ChartRecord(
+            chart_record = chart_record or ChartRecord(
                 user_id=user_id,
-                request_json=request.model_dump(mode="json"),
+                request_json={
+                    **request.model_dump(mode="json"),
+                    **(
+                        {"birth_calendar": request.birth_calendar} if request.birth_calendar else {}
+                    ),
+                },
                 snapshot_json=chart,
                 snapshot_hash=snapshot_hash,
             )
@@ -142,6 +181,9 @@ class AnalysisJobService:
                 )
             session.add(job)
             try:
+                session.flush()
+                if self.require_cards and user_id is not None:
+                    debit_report(session, user_id, job.id)
                 session.commit()
             except IntegrityError:
                 session.rollback()
@@ -150,8 +192,107 @@ class AnalysisJobService:
                 )
                 if existing is None:
                     raise
+                if request.birth_calendar:
+                    existing.chart.request_json = {
+                        **existing.chart.request_json,
+                        "birth_calendar": request.birth_calendar,
+                    }
+                    session.commit()
                 return Submission(existing.id, existing.chart_id, existing.status, True)
             return Submission(job.id, chart_record.id, job.status, False)
+
+    def save_chart(
+        self, request: ChartRequest, snapshot: dict[str, object], *, user_id: str
+    ) -> dict[str, object]:
+        """Archive free chart facts only; never enqueue sections or debit cards."""
+        chart = deepcopy(snapshot)
+        cast(dict[str, Any], chart["request"]).pop("birth_calendar", None)
+        snapshot_hash = canonical_hash(chart)
+        with self.database.session() as session:
+            lock_user(session, user_id)
+            record = session.scalar(
+                select(ChartRecord)
+                .where(ChartRecord.user_id == user_id, ChartRecord.snapshot_hash == snapshot_hash)
+                .order_by(ChartRecord.created_at.desc(), ChartRecord.id.desc())
+                .limit(1)
+            )
+            if record is None:
+                record = ChartRecord(
+                    user_id=user_id,
+                    request_json=request.model_dump(mode="json"),
+                    snapshot_json=chart,
+                    snapshot_hash=snapshot_hash,
+                )
+                session.add(record)
+            if request.birth_calendar:
+                record.request_json = {
+                    **record.request_json, "birth_calendar": request.birth_calendar,
+                }
+            session.flush()
+            job = max(record.jobs, key=lambda job: (job.created_at, job.id), default=None)
+            result: dict[str, object] = {
+                "saved_chart_id": record.id,
+                "analysis_job_id": job.id if job else None,
+            }
+            session.commit()
+            return result
+
+    def saved_chart(self, chart_id: str, *, actor_user_id: str | None) -> dict[str, object]:
+        with self.database.session() as session:
+            record = session.get(ChartRecord, chart_id)
+            if record is None or actor_user_id is None or record.user_id != actor_user_id:
+                raise AnalysisJobError(404, "chart_not_found", "命盘不存在或无权访问")
+            snapshot = deepcopy(record.snapshot_json)
+            calendar = record.request_json.get("birth_calendar")
+            chart = {
+                **snapshot,
+                "request": {
+                    **snapshot["request"],
+                    **({"birth_calendar": calendar} if calendar in ("solar", "lunar") else {}),
+                },
+            }
+            job = max(record.jobs, key=lambda job: (job.created_at, job.id), default=None)
+            return {
+                "chart_id": record.id,
+                "job_id": job.id if job else None,
+                "request": deepcopy(record.request_json),
+                "chart": with_annual_branch_stars(chart),
+                "snapshot": snapshot,
+            }
+
+    def list_reports_for_user(self, user_id: str, *, limit: int = 100) -> list[dict[str, object]]:
+        with self.database.session() as session:
+            charts = session.scalars(
+                select(ChartRecord)
+                .where(ChartRecord.user_id == user_id)
+                .options(
+                    selectinload(ChartRecord.jobs)
+                    .selectinload(AnalysisJobRecord.sections)
+                    .load_only(AnalysisSectionRecord.status)
+                )
+                .order_by(ChartRecord.created_at.desc(), ChartRecord.id.desc())
+                .limit(limit)
+            ).all()
+            reports = []
+            for chart in charts:
+                job = max(chart.jobs, key=lambda job: (job.created_at, job.id), default=None)
+                reports.append({
+                    "chart_id": chart.id,
+                    "job_id": job.id if job else None,
+                    "status": job.status if job else "locked",
+                    "name": chart.request_json.get("name"),
+                    "birth_local_datetime": chart.request_json.get("birth_local_datetime"),
+                    "pillars": [
+                        chart.snapshot_json.get("pillars", {}).get(key, {}).get("pillar", "")
+                        for key in ("year", "month", "day", "hour")
+                    ],
+                    "completed_sections": (
+                        sum(s.status == "completed" for s in job.sections) if job else 0
+                    ),
+                    "total_sections": len(job.sections) if job else 0,
+                    "created_at": chart.created_at,
+                })
+            return reports
 
     def status(self, job_id: str, *, actor_user_id: str | None = None) -> dict[str, object]:
         job = self._load_job(job_id, include_chart=True, actor_user_id=actor_user_id)
@@ -159,9 +300,18 @@ class AnalysisJobService:
 
     def result(self, job_id: str, *, actor_user_id: str | None = None) -> dict[str, object]:
         job = self._load_job(job_id, include_chart=True, actor_user_id=actor_user_id)
+        snapshot = job.chart.snapshot_json
+        calendar = job.chart.request_json.get("birth_calendar")
+        chart = {
+            **snapshot,
+            "request": {
+                **snapshot["request"],
+                **({"birth_calendar": calendar} if calendar in ("solar", "lunar") else {}),
+            },
+        }
         return {
             **_serialize_status(job),
-            "chart": job.chart.snapshot_json,
+            "chart": with_annual_branch_stars(chart),
             "sections": [_serialize_section(section) for section in job.sections],
             "disclaimer": ANALYSIS_DISCLAIMER,
         }
@@ -286,6 +436,10 @@ class AnalysisJobService:
                     "status": job.status,
                     "name": job.chart.request_json.get("name"),
                     "birth_local_datetime": job.chart.request_json.get("birth_local_datetime"),
+                    "pillars": [
+                        job.chart.snapshot_json.get("pillars", {}).get(key, {}).get("pillar", "")
+                        for key in ("year", "month", "day", "hour")
+                    ],
                     "completed_sections": sum(
                         section.status == "completed" for section in job.sections
                     ),

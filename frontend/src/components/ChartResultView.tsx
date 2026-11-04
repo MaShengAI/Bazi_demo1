@@ -1,138 +1,79 @@
-import type { ChartResult, MajorLuckCycle, Pillar } from "../types";
+import type { ReactNode } from "react";
+import type { ChartResult, Pillar } from "../types";
+import { LuckTimeline } from "./LuckTimeline";
+import { solarToLunar, lunarMonthLabel, lunarDayLabel } from "../calendar";
+import { elementForSymbol } from "../data/fiveElements";
+import { zodiacForLunarYear } from "../data/zodiac";
 
 const PILLAR_LABELS = { year: "年柱", month: "月柱", day: "日柱", hour: "时柱" } as const;
 
-function formatDateTime(value: string) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value.replace("T", " ");
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-    timeZone: "Asia/Shanghai",
-  }).format(date);
+function formatBirthTimes(chart: ChartResult) {
+  const [date, time] = chart.request.birth_local_datetime.split("T");
+  const [year, month, day] = date.split("-").map(Number);
+  const lunar = solarToLunar({ year, month, day });
+  // Show the entered local clock time, independently of chart time correction.
+  const hour = Number(time.split(":")[0]);
+  const shichen = "子丑寅卯辰巳午未申酉戌亥"[Math.floor((hour + 1) / 2) % 12];
+  return {
+    lunar: `农历：${lunar.year}年${lunarMonthLabel(lunar.month)}${lunarDayLabel(lunar.day)} ${shichen}时`,
+    solar: `公历：${year}年${month}月${day}日 ${time}`,
+    zodiac: zodiacForLunarYear(lunar.year),
+  };
 }
 
-function PillarCard({ label, data, isDay }: { label: string; data: Pillar; isDay?: boolean }) {
-  return (
-    <article className={`pillar-card${isDay ? " pillar-day" : ""}`}>
-      <div className="pillar-label">{label}</div>
-      <div className="pillar-main-star">{data.main_star}</div>
-      <div className="pillar-glyphs" aria-label={`${label}${data.pillar}`}>
-        <span>{data.heavenly_stem}</span>
-        <span>{data.earthly_branch}</span>
-      </div>
-      <div className="pillar-nayin">纳音 · {data.na_yin}</div>
-      <dl className="pillar-meta">
-        <div><dt>十二长生</dt><dd>{data.star_fortune}</dd></div>
-        <div><dt>自坐</dt><dd>{data.self_seat}</dd></div>
-        <div><dt>旬空</dt><dd>{data.void.join("、") || "—"}</dd></div>
-      </dl>
-      <div className="hidden-stems">
-        <span className="mini-label">藏干</span>
-        {data.hidden_stems.map((item) => (
-          <span className="stem-chip" key={`${item.stem}-${item.role}`}>
-            <b>{item.stem}</b> {item.secondary_star}<small>{item.role}</small>
-          </span>
-        ))}
-      </div>
-      <div className="shensha-list">
-        <span className="mini-label">神煞</span>
-        {data.shen_sha.length ? data.shen_sha.map((item) => (
-          <span className="shensha-chip" title={`${item.rule_id} · ${item.evidence}`} key={`${item.rule_id}-${item.code}`}>
-            {item.name}
-          </span>
-        )) : <span className="muted">无命中</span>}
-      </div>
-    </article>
-  );
+const PILLAR_KEYS = ["year", "month", "day", "hour"] as const;
+function PillarSymbol({ value, large = false }: { value: string; large?: boolean }) {
+  const element = elementForSymbol(value);
+  return <span className={`matrix-symbol ${large ? "matrix-symbol-large" : "matrix-hidden-stem"} element-${element?.className || "unknown"}`} aria-label={`${value}${element?.label || ""}`}>
+    {value}{!large && element?.label}
+  </span>;
 }
 
-function LuckCycle({ cycle }: { cycle: MajorLuckCycle }) {
-  return (
-    <details className="luck-cycle">
-      <summary>
-        <div className="luck-index">{String(cycle.index).padStart(2, "0")}</div>
-        <div className="luck-pillar">{cycle.pillar}</div>
-        <div className="luck-summary-meta">
-          <b>{cycle.start_age}—{cycle.end_age} 岁</b>
-          <span>{cycle.ten_god_of_stem} · {cycle.na_yin}</span>
-        </div>
-        <span className="details-hint">查看流年</span>
-      </summary>
-      <div className="cycle-details">
-        <p className="cycle-date">{formatDateTime(cycle.start_datetime)} — {formatDateTime(cycle.end_datetime)}</p>
-        <div className="cycle-shensha">
-          {cycle.shen_sha.map((item) => <span className="shensha-chip" key={`${item.rule_id}-${item.code}`}>{item.name}</span>)}
-        </div>
-        <div className="annual-grid">
-          {cycle.annual_years.map((year) => (
-            <article className="annual-card" key={`${cycle.index}-${year.gregorian_year}`}>
-              <div><b>{year.gregorian_year}</b><span>{year.age} 岁</span></div>
-              <strong>{year.pillar}</strong>
-              <p>{year.ten_god} · {year.na_yin}</p>
-              <div>{year.shen_sha.slice(0, 4).map((item) => <span key={`${item.rule_id}-${item.code}`}>{item.name}</span>)}</div>
-            </article>
-          ))}
-        </div>
-      </div>
-    </details>
-  );
+function PillarTable({ pillars }: { pillars: ChartResult["pillars"] }) {
+  const rows: Array<{ label: string; className?: string; content: (pillar: Pillar) => ReactNode }> = [
+    { label: "主星", content: pillar => pillar.main_star },
+    { label: "天干", className: "matrix-glyph-row", content: pillar => <PillarSymbol value={pillar.heavenly_stem} large /> },
+    { label: "地支", className: "matrix-glyph-row", content: pillar => <PillarSymbol value={pillar.earthly_branch} large /> },
+    { label: "藏干", content: pillar => <div className="matrix-stack">{pillar.hidden_stems.length ? pillar.hidden_stems.map((item, index) => <span key={`${item.stem}-${index}`} title={item.role}><PillarSymbol value={item.stem} /></span>) : "—"}</div> },
+    { label: "副星", content: pillar => <div className="matrix-stack">{pillar.secondary_stars.length ? pillar.secondary_stars.map((star, index) => <span key={`${star}-${index}`}>{star}</span>) : "—"}</div> },
+    { label: "星运", content: pillar => pillar.star_fortune },
+    { label: "自坐", content: pillar => pillar.self_seat },
+    { label: "空亡", content: pillar => pillar.void.join("、") || "—" },
+    { label: "纳音", content: pillar => pillar.na_yin },
+    { label: "神煞", className: "matrix-shensha-row", content: pillar => <div className="matrix-stack">{pillar.shen_sha.length ? pillar.shen_sha.map((item, index) => <span key={`${item.code}-${index}`} title={`${item.rule_id} · ${item.evidence}`}>{item.name}</span>) : "—"}</div> },
+  ];
+  return <div className="pillar-matrix-frame">
+    <table className="pillar-matrix">
+      <caption className="sr-only">四柱命盘</caption>
+      <colgroup><col className="matrix-label-col" /><col span={4} /></colgroup>
+      <thead><tr><th scope="col">日期</th>{PILLAR_KEYS.map(key => <th scope="col" key={key} aria-label={`${PILLAR_LABELS[key]}${pillars[key].pillar}`}>{PILLAR_LABELS[key]}</th>)}</tr></thead>
+      <tbody>{rows.map(row => <tr key={row.label} className={row.className}><th scope="row">{row.label}</th>{PILLAR_KEYS.map(key => <td key={key}>{row.content(pillars[key])}</td>)}</tr>)}</tbody>
+    </table>
+  </div>;
 }
 
 export function ChartResultView({ chart }: { chart: ChartResult }) {
-  const age = chart.luck_start.start_age;
+  const birthTimes = formatBirthTimes(chart);
   return (
-    <section className="results-section" aria-labelledby="chart-title">
+    <section id="chart-facts" className="results-section" aria-labelledby="chart-title">
+      <h2 className="report-section-heading">基础信息</h2>
       <div className="results-title-row">
-        <div>
-          <div className="section-kicker">确定性排盘结果</div>
-          <h2 id="chart-title">{chart.request.name || "未署名"}的四柱命盘</h2>
-          <p>{chart.location.province} · {chart.location.city} ｜ 真太阳时 {formatDateTime(chart.time_normalization.true_solar_datetime)}</p>
+        <div className="chart-basic-info">
+          <img className="chart-zodiac-avatar" src={birthTimes.zodiac.image} alt={`生肖属${birthTimes.zodiac.name}`} width={76} height={76} decoding="async" />
+          <div className="chart-basic-copy">
+            <h2 id="chart-title">{chart.request.name || "未署名"}</h2>
+            <p className="chart-birth-times"><span>{chart.location.province} · {chart.location.city}</span><span>{birthTimes.lunar}</span><span>{birthTimes.solar}</span></p>
+          </div>
         </div>
         <span className="ruleset-badge">规则版本 {chart.ruleset_versions.service}</span>
       </div>
 
-      <div className="pillar-grid">
-        {(Object.keys(PILLAR_LABELS) as Array<keyof typeof PILLAR_LABELS>).map((key) => (
-          <PillarCard key={key} label={PILLAR_LABELS[key]} data={chart.pillars[key]} isDay={key === "day"} />
-        ))}
-      </div>
+      <h2 className="report-section-heading">八字信息</h2>
+      <PillarTable pillars={chart.pillars} />
 
-      <div className="luck-overview">
-        <div className="seal" aria-hidden="true">运</div>
-        <div>
-          <span>起运</span>
-          <strong>{age.years} 年 {age.months} 月 {age.days} 日</strong>
-        </div>
-        <div>
-          <span>行运方向</span>
-          <strong>{chart.luck_direction.direction === "forward" ? "顺行" : "逆行"}</strong>
-          <small>{chart.luck_direction.direction_reason}</small>
-        </div>
-        <div>
-          <span>参照节气</span>
-          <strong>{chart.luck_start.reference_jie}</strong>
-        </div>
-        <div>
-          <span>起运时刻</span>
-          <strong>{formatDateTime(chart.luck_start.start_datetime)}</strong>
-        </div>
-      </div>
+      <h2 className="report-section-heading">大运流年</h2>
+      <LuckTimeline chart={chart} />
 
-      <div className="subsection-heading">
-        <div>
-          <div className="section-kicker">十年一步</div>
-          <h3>大运与流年</h3>
-        </div>
-        <p>展开任一大运，可查看对应流年、十神与神煞。</p>
-      </div>
-      <div className="luck-list">
-        {chart.major_luck_cycles.map((cycle) => <LuckCycle key={cycle.index} cycle={cycle} />)}
-      </div>
     </section>
   );
 }

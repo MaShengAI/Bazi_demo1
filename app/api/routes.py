@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from dataclasses import replace
+from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, Query, Request, Response, status
 from fastapi.responses import RedirectResponse
@@ -14,11 +15,16 @@ from app.schemas.analysis import (
     AnalysisResultResponse,
     AnalysisStatusResponse,
 )
-from app.schemas.auth import AnalysisHistoryItem, AuthStateResponse, AuthUserResponse
+from app.schemas.auth import (
+    AnalysisHistoryItem,
+    AuthStateResponse,
+    AuthUserResponse,
+    ReportHistoryItem,
+)
 from app.schemas.chart import ChartRequest
 from app.services.analysis_jobs import AnalysisJobError, AnalysisJobService
 from app.services.auth import AuthenticatedUser, AuthError, AuthService
-from app.services.chart_service import ChartService
+from app.services.chart_service import ChartService, with_annual_branch_stars
 
 router = APIRouter(prefix="/api/v1")
 logger = logging.getLogger("bazi.api.jobs")
@@ -35,7 +41,7 @@ def get_location_repository(request: Request) -> LocationRepository:
 
 
 def get_analysis_job_service(request: Request) -> AnalysisJobService:
-    """持久化接口需要数据库；本地排盘接口不使用此依赖。"""
+    """Account chart archives and analysis jobs share the persisted chart store."""
     service = request.app.state.analysis_job_service
     if service is None:
         raise AnalysisJobError(
@@ -78,9 +84,53 @@ RequiredUserDependency = Annotated[AuthenticatedUser, Depends(require_current_us
 
 
 @router.post("/charts")
-def create_chart(payload: ChartRequest, service: ChartServiceDependency) -> dict[str, object]:
-    """执行完整排盘；路由层不直接参与历法计算。"""
-    return service.calculate(payload)
+def create_chart(
+    payload: ChartRequest,
+    request: Request,
+    service: ChartServiceDependency,
+    current_user: OptionalUserDependency,
+) -> dict[str, object]:
+    """Free calculation; authenticated users also archive the chart without unlocking."""
+    if request.app.state.auth_settings.enabled and current_user is None:
+        raise AuthError(401, "authentication_required", "请先微信登录，命盘将保存到账户")
+    snapshot = service.calculate(payload)
+    saved = (
+        get_analysis_job_service(request).save_chart(payload, snapshot, user_id=current_user.id)
+        if current_user else {}
+    )
+    return {**with_annual_branch_stars(snapshot), **saved}
+
+
+@router.get("/charts/{chart_id}")
+def saved_chart(
+    chart_id: str,
+    service: AnalysisJobServiceDependency,
+    current_user: RequiredUserDependency,
+) -> dict[str, object]:
+    result = service.saved_chart(chart_id, actor_user_id=current_user.id)
+    result.pop("snapshot")
+    return result
+
+
+@router.post("/charts/{chart_id}/analyses", response_model=AnalysisAccepted, status_code=202)
+def unlock_saved_chart(
+    chart_id: str,
+    request: Request,
+    service: AnalysisJobServiceDependency,
+    current_user: RequiredUserDependency,
+) -> AnalysisAccepted:
+    stored = service.saved_chart(chart_id, actor_user_id=current_user.id)
+    settings: AuthSettings = request.app.state.auth_settings
+    accepted = service.submit(
+        ChartRequest.model_validate(stored["request"]),
+        user_id=current_user.id,
+        analysis_limit_per_24h=settings.analysis_limit_per_24h,
+        chart_id=chart_id,
+    )
+    return AnalysisAccepted(
+        job_id=accepted.job_id, chart_id=accepted.chart_id,
+        status=accepted.status, deduplicated=accepted.deduplicated,  # type: ignore[arg-type]
+    )
 
 
 @router.post(
@@ -203,9 +253,12 @@ def start_wechat_login(
     request: Request,
     service: AuthServiceDependency,
     return_to: str = Query(default="/", max_length=500),
+    scope: Literal["snsapi_base", "snsapi_userinfo"] | None = Query(default=None),
 ) -> RedirectResponse:
     settings: AuthSettings = request.app.state.auth_settings
     state = service.create_oauth_state(return_to)
+    if scope is not None:
+        settings = replace(settings, oauth_scope=scope)
     return RedirectResponse(WechatOAuthClient(settings).authorization_url(state), status_code=302)
 
 
@@ -249,6 +302,8 @@ def auth_state(request: Request, current_user: OptionalUserDependency) -> AuthSt
         else None
     )
     return AuthStateResponse(
+        payments_enabled=request.app.state.payment_settings.enabled,
+        payment_mode=request.app.state.payment_settings.mode,
         enabled=settings.enabled,
         authenticated=current_user is not None,
         require_for_analysis=settings.require_for_analysis,
@@ -275,6 +330,18 @@ def my_analyses(
     return [
         AnalysisHistoryItem.model_validate(item)
         for item in service.list_for_user(current_user.id, limit=limit)
+    ]
+
+
+@router.get("/me/reports", response_model=list[ReportHistoryItem])
+def my_reports(
+    service: AnalysisJobServiceDependency,
+    current_user: RequiredUserDependency,
+    limit: int = Query(default=100, ge=1, le=100),
+) -> list[ReportHistoryItem]:
+    return [
+        ReportHistoryItem.model_validate(item)
+        for item in service.list_reports_for_user(current_user.id, limit=limit)
     ]
 
 

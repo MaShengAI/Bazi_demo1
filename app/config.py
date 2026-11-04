@@ -15,7 +15,7 @@ class AnalysisQueueSettings:
     worker_lease_seconds: int = 600
     worker_concurrency: int = 4
     max_running_sections_per_job: int = 4
-    max_attempts: int = 2
+    max_attempts: int = 3
     retry_delays_seconds: tuple[int, ...] = (30, 60, 120)
 
     @classmethod
@@ -28,7 +28,7 @@ class AnalysisQueueSettings:
             worker_lease_seconds=_int_env("BAZI_WORKER_LEASE_SECONDS", 600, 30, 3600),
             worker_concurrency=_int_env("BAZI_WORKER_CONCURRENCY", 4, 1, 32),
             max_running_sections_per_job=_int_env("BAZI_MAX_RUNNING_SECTIONS_PER_JOB", 4, 1, 8),
-            max_attempts=_int_env("BAZI_ANALYSIS_MAX_ATTEMPTS", 2, 1, 10),
+            max_attempts=_int_env("BAZI_ANALYSIS_MAX_ATTEMPTS", 3, 1, 10),
             retry_delays_seconds=_retry_delays_env(
                 "BAZI_ANALYSIS_RETRY_DELAYS_SECONDS", (30, 60, 120)
             ),

@@ -63,6 +63,8 @@ def test_mock_wechat_login_session_and_logout(auth_app) -> None:
     client, _ = auth_app
     before = client.get("/api/v1/auth/me").json()
     assert before == {
+        "payments_enabled": False,
+        "payment_mode": "disabled",
         "enabled": True,
         "authenticated": False,
         "require_for_analysis": True,
@@ -122,6 +124,10 @@ def test_analysis_requires_login_and_is_owned_by_current_user(auth_app) -> None:
     assert history.status_code == 200
     assert history.json()[0]["job_id"] == job_id
     assert history.json()[0]["name"] == "微信登录测试"
+    assert history.json()[0]["pillars"] == [
+        client.get(f"/api/v1/analyses/{job_id}").json()["chart"]["pillars"][key]["pillar"]
+        for key in ("year", "month", "day", "hour")
+    ]
 
     with database.session() as session:
         chart = session.scalar(select(ChartRecord))
@@ -134,6 +140,7 @@ def test_analysis_requires_login_and_is_owned_by_current_user(auth_app) -> None:
     client.cookies.set("bazi_session", second_token)
     hidden = client.get(f"/api/v1/analyses/{job_id}")
     assert hidden.status_code == 404
+    assert client.get("/api/v1/me/analyses").json() == []
 
 
 def test_authenticated_deduplication_is_scoped_to_user(auth_app) -> None:
@@ -168,3 +175,20 @@ def test_per_user_24_hour_limit_does_not_block_existing_deduplicated_report(auth
     limited = client.post("/api/v1/analyses", json=chart_payload("第三份", "1994-08-18T09:30"))
     assert limited.status_code == 429
     assert limited.json()["error"]["code"] == "daily_analysis_limit_reached"
+
+
+def test_profile_authorization_updates_existing_account_without_losing_reports(auth_app) -> None:
+    client, _ = auth_app
+    login(client)
+    user_id = client.get("/api/v1/auth/me").json()["user"]["id"]
+    accepted = client.post("/api/v1/analyses", json=chart_payload())
+    current, token = app.state.auth_service.login_wechat_user(
+        WechatProfile(openid="local-wechat-user", nickname="新的授权昵称",
+                      avatar_url="https://thirdwx.qlogo.cn/example-avatar")
+    )
+    assert current.id == user_id
+    client.cookies.set("bazi_session", token)
+    after = client.get("/api/v1/auth/me").json()["user"]
+    assert after["display_name"] == "新的授权昵称"
+    assert after["avatar_url"] == "https://thirdwx.qlogo.cn/example-avatar"
+    assert client.get("/api/v1/me/analyses").json()[0]["job_id"] == accepted.json()["job_id"]

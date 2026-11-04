@@ -9,6 +9,7 @@ export type JobStatus =
 export type SectionStatus = Exclude<JobStatus, "partial">;
 
 export interface ChartRequest {
+  birth_calendar?: "solar" | "lunar";
   name?: string;
   gender: "male" | "female";
   birth_local_datetime: string;
@@ -59,6 +60,7 @@ export interface AnnualYear {
   pillar: string;
   age: number;
   ten_god: string;
+  secondary_stars?: string[];
   na_yin: string;
   start_at_li_chun: string;
   end_at_next_li_chun: string;
@@ -76,6 +78,8 @@ export interface MajorLuckCycle extends Pillar {
 }
 
 export interface ChartResult {
+  saved_chart_id?: string;
+  analysis_job_id?: string | null;
   request: ChartRequest;
   location: {
     location_id: number;
@@ -172,6 +176,8 @@ export interface AuthUser {
 }
 
 export interface AuthState {
+  payments_enabled?: boolean;
+  payment_mode?: "disabled" | "mock" | "live";
   enabled: boolean;
   authenticated: boolean;
   require_for_analysis: boolean;
@@ -180,6 +186,7 @@ export interface AuthState {
 }
 
 export interface AnalysisHistoryItem {
+  pillars?: string[];
   job_id: string;
   chart_id: string;
   status: JobStatus;
@@ -188,4 +195,65 @@ export interface AnalysisHistoryItem {
   completed_sections: number;
   total_sections: number;
   created_at: string;
+}
+
+export type SavedReportItem = Omit<AnalysisHistoryItem, "job_id" | "status"> & {
+  job_id: string | null;
+  status: JobStatus | "locked";
+};
+
+export interface SavedChartResponse {
+  chart_id: string;
+  job_id: string | null;
+  request: ChartRequest;
+  chart: ChartResult;
+}
+
+export interface CardProduct {
+  code: "single" | "double" | "family";
+  name: string;
+  cards: number;
+  price: number;
+}
+
+export interface PaymentOrder {
+  coupon_id?: string | null;
+  id: string;
+  product_code: string;
+  product_name: string;
+  cards: number;
+  original_amount: number;
+  discount_amount: number;
+  total_amount: number;
+  status: "pending" | "paid" | "closed";
+  created_at: string;
+  expires_at: string;
+}
+
+export interface DiscountCoupon {
+  id: string;
+  amount: number;
+  expires_at: string;
+  status: "available" | "reserved" | "used";
+  source?: "weekly" | "refund" | "redemption";
+}
+
+export interface CardAccount {
+  accept_new_orders?: boolean;
+  balance: number;
+  mode: "mock" | "live";
+  coupon: DiscountCoupon;
+  coupons?: DiscountCoupon[];
+  products: CardProduct[];
+  orders: PaymentOrder[];
+}
+
+export interface PrepayResponse {
+  mode: "mock" | "live";
+  parameters: Record<string, string> | null;
+}
+
+export interface RedemptionReceipt {
+  kind: "cards" | "coupon"; value: number; already_redeemed: boolean;
+  redeemed_at: string; coupon_expires_at: string | null;
 }
