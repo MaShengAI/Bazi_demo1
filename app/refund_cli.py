@@ -36,7 +36,10 @@ def save_plan(path: Path, data: dict) -> None:
         raise ValueError("预览文件须保存到 /root 下")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
-        os.fchmod(stream.fileno(), 0o600)  # type: ignore[attr-defined]  # Linux-only, guarded in main.
+        if sys.platform == "linux":
+            os.fchmod(stream.fileno(), 0o600)
+        else:
+            raise ValueError("退款预览文件仅支持在 Linux 服务器上保存")
         json.dump(data, stream, ensure_ascii=False, indent=2)
         stream.flush()
         os.fsync(stream.fileno())

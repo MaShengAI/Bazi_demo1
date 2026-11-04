@@ -7,6 +7,7 @@ import os
 import threading
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from datetime import timedelta
 
 import pytest
 from mysql_target import require_financial_test_database
@@ -199,12 +200,15 @@ def test_mysql_unknown_request_keeps_hold_and_blocks_fresh_refund(isolated):
     assert error.value.code == "refund_in_progress"
 
 
-def test_mysql_concurrent_success_creates_one_independent_gift(isolated):
+@pytest.mark.parametrize("microsecond", [0, 750000])
+def test_mysql_concurrent_success_creates_one_independent_gift(isolated, monkeypatch, microsecond):
     db, uid, order, service, provider = isolated
     plan = service.preview(order.id, 3800, 0, "人工审核通过", "mysql-test")
     service.submit(plan, plan["confirmation"])
     provider.state = "SUCCESS"
     evidence = provider.result()
+    issued_at = now_utc().replace(microsecond=microsecond)
+    monkeypatch.setattr("app.services.refunds.now_utc", lambda: issued_at)
     with ThreadPoolExecutor(max_workers=8) as pool:
         list(pool.map(lambda _: service.receive(evidence, source="query"), range(8)))
     assert_balance(db, uid, 5)
@@ -215,7 +219,12 @@ def test_mysql_concurrent_success_creates_one_independent_gift(isolated):
             )
         )
         assert len(gifts) == 1 and gifts[0].period_start is None
-        assert 604790 < (gifts[0].expires_at - now_utc()).total_seconds() <= 604800
+        # MySQL DATETIME(0) can round fractional seconds up. Compare with
+        # the fixed issuance time, not a later wall clock sampled by the test.
+        expected = issued_at + timedelta(days=7)
+        first_second = expected.replace(microsecond=0)
+        last_second = first_second + timedelta(seconds=bool(microsecond))
+        assert first_second <= gifts[0].expires_at <= last_second
         assert s.get(PaymentRefund, plan["refund_id"]).status == "success"
     payments = PaymentService(db, PaymentSettings(mode="mock"), AuthSettings(mode="mock"))
     pending = payments.create(uid, "single", True, uuid.uuid4().hex)
